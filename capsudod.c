@@ -260,6 +260,7 @@ static int daemon_loop(const char *sockaddr, char *envp[], int argc, char *argv[
 			err(EXIT_FAILURE, "forking child process");
 			break;
 		case 0:
+			close(sockfd);
 			exit(child_loop(clientfd, envp, argc, argv));
 			break;
 		default:
