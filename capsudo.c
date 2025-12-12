@@ -31,12 +31,17 @@ static int pty_ourside = -1;
 static int pty_theirside = -1;
 static struct termios saved_tio;
 static bool have_saved_tio = false;
+static enum capsudo_sessiontype sessiontype = CAPSUDO_AUTO;
 
-[[noreturn]]
-static void usage(void)
+static enum capsudo_sessiontype determine_session_type(void)
 {
-	fprintf(stderr, "usage: capsudo -s socket [-e key=value...] [args]\n");
-	exit(EXIT_FAILURE);
+	return isatty(STDIN_FILENO) && isatty(STDOUT_FILENO) ? CAPSUDO_INTERACTIVE : CAPSUDO_NONINTERACTIVE;
+}
+
+static int usage(void)
+{
+	fprintf(stderr, "usage: capsudo -s socket [-i|-n] [-e key=value...] [args]\n");
+	return EXIT_FAILURE;
 }
 
 static void restore_tty(void)
@@ -158,6 +163,25 @@ static bool send_file_descriptors(int sockfd)
 	return true;
 }
 
+static bool send_sessiontype(int sockfd)
+{
+	size_t nwritten, xwritten;
+	struct capsudo_message *msg = alloca(sizeof(struct capsudo_message) + sizeof(enum capsudo_sessiontype));
+
+	msg->fieldtype = CAPSUDO_SESSION_TYPE;
+	msg->length = sizeof(enum capsudo_sessiontype);
+	memcpy(msg->data, &sessiontype, sizeof(enum capsudo_sessiontype));
+
+	xwritten = sizeof(struct capsudo_message) + msg->length;
+	if ((nwritten = write(sockfd, msg, xwritten)) != xwritten)
+	{
+		close(sockfd);
+		err(EXIT_FAILURE, "failed to write %zu bytes to capsudo daemon, wrote %zu instead", xwritten, nwritten);
+	}
+
+	return true;
+}
+
 static int setup_connection(const char *sockaddr, char *envp[], int argc, char *argv[])
 {
 	int sockfd;
@@ -183,6 +207,9 @@ static int setup_connection(const char *sockaddr, char *envp[], int argc, char *
 		if (!write_message(sockfd, CAPSUDO_ARG, argv[argi]))
 			return -1;
 	}
+
+	if (!send_sessiontype(sockfd))
+		return -1;
 
 	if (!send_file_descriptors(sockfd))
 		return -1;
@@ -295,10 +322,16 @@ int main(int argc, char *argv[])
 	size_t envp_nmemb = 0;
 	int opt;
 
-	while ((opt = getopt(argc, argv, "s:e:")) != -1)
+	while ((opt = getopt(argc, argv, "ins:e:")) != -1)
 	{
 		switch (opt)
 		{
+		case 'i':
+			sessiontype = CAPSUDO_INTERACTIVE;
+			break;
+		case 'n':
+			sessiontype = CAPSUDO_NONINTERACTIVE;
+			break;
 		case 's':
 			sockaddr = optarg;
 			break;
@@ -313,9 +346,10 @@ int main(int argc, char *argv[])
 	}
 
 	if (sockaddr == NULL)
-	{
-		usage();
-	}
+		return usage();
+
+	if (sessiontype == CAPSUDO_AUTO)
+		sessiontype = determine_session_type();
 
 	return client_loop(sockaddr, envp, argc, argv);
 }

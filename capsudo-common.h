@@ -18,8 +18,14 @@ enum capsudo_fieldtype {
 	CAPSUDO_ENV = 2,
 	CAPSUDO_EXIT = 3,
 	CAPSUDO_FD = 4,
-	CAPSUDO_INTERACTIVE = 5,
+	CAPSUDO_SESSION_TYPE = 5,
 	CAPSUDO_END = 6,
+};
+
+enum capsudo_sessiontype {
+	CAPSUDO_AUTO = 1,
+	CAPSUDO_INTERACTIVE = 2,
+	CAPSUDO_NONINTERACTIVE = 3,
 };
 
 struct capsudo_message {

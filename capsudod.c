@@ -35,6 +35,8 @@ struct capsudo_session {
 	int client_stdout;
 	int client_stderr;
 
+	enum capsudo_sessiontype sessiontype;
+
 	char **argv;
 	size_t argv_nmemb;
 	char **envp;
@@ -126,6 +128,9 @@ static bool receive_configuration(struct capsudo_session *session)
 			session->client_stdout = fdtable[1];
 			session->client_stderr = fdtable[2];
 			break;
+		case CAPSUDO_SESSION_TYPE:
+			session->sessiontype = *(int *) msg->data;
+			break;
 		case CAPSUDO_END:
 			return true;
 		default:
@@ -207,16 +212,19 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 		if (dup2(session.client_stderr, STDERR_FILENO) < 0)
 			_exit(127);
 
-		if (ioctl(STDIN_FILENO, TIOCSCTTY, 0) < 0)
-			_exit(127);
+		if (session.sessiontype == CAPSUDO_INTERACTIVE)
+		{
+			if (ioctl(STDIN_FILENO, TIOCSCTTY, 0) < 0)
+				_exit(127);
 
-		struct sigaction old, ignore = {
-			.sa_handler = SIG_IGN,
-		};
+			struct sigaction old, ignore = {
+				.sa_handler = SIG_IGN,
+			};
 
-		sigaction(SIGTTOU, &ignore, &old);
-		tcsetpgrp(STDIN_FILENO, getpgrp());
-		sigaction(SIGTTOU, &old, NULL);
+			sigaction(SIGTTOU, &ignore, &old);
+			tcsetpgrp(STDIN_FILENO, getpgrp());
+			sigaction(SIGTTOU, &old, NULL);
+		}
 
 		execvpe(session.argv[0], session.argv, session.envp);
 		_exit(127);
