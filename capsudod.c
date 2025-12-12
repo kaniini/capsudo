@@ -26,6 +26,8 @@
 #include <errno.h>
 #include <termios.h>
 #include <signal.h>
+#include <grp.h>
+#include <pwd.h>
 
 #include "capsudo-common.h"
 
@@ -46,11 +48,69 @@ struct capsudo_session {
 [[noreturn]]
 static void usage(void)
 {
-	fprintf(stderr, "usage: capsudod -s socket [-e key=value...] [program]\n");
+	fprintf(stderr, "usage: capsudod -s socket [-o user[:group]] [-e key=value...] [program]\n");
 	exit(EXIT_FAILURE);
 }
 
-static int open_listener(const char *sockaddr)
+static bool parse_owner_spec(const char *spec, uid_t *uid_out, gid_t *gid_out)
+{
+	uid_t uid = -1;
+	gid_t gid = -1;
+	char specbuf[4096];
+
+	strlcpy(specbuf, spec, sizeof specbuf);
+
+	char *p = specbuf;
+	char *user = strsep(&p, ":");
+	char *group = p;
+
+	if (user != NULL && *user)
+	{
+		char *end = NULL;
+		unsigned long val = strtoul(user, &end, 10);
+
+		if (!errno && end != NULL && !*end)
+			uid = (uid_t) val;
+		else
+		{
+			struct passwd *pw = getpwnam(user);
+
+			if (pw == NULL)
+				return false;
+
+			uid = pw->pw_uid;
+			gid = pw->pw_gid;
+		}
+	}
+
+	if (group != NULL && *group)
+	{
+		char *end = NULL;
+		unsigned long val = strtoul(group, &end, 10);
+
+		if (!errno && end != NULL && !*end)
+			gid = (gid_t) val;
+		else
+		{
+			struct group *gr = getgrnam(group);
+
+			if (gr == NULL)
+				return false;
+
+			gid = gr->gr_gid;
+		}
+	}
+
+	if (uid == -1 && gid == -1)
+		return false;
+
+	*uid_out = uid;
+	*gid_out = gid;
+
+	return true;
+}
+
+static int open_listener(const char *sockaddr, uid_t uid, gid_t gid)
 {
 	int sockfd;
 	struct sockaddr_un addr = {
@@ -66,6 +126,10 @@ static int open_listener(const char *sockaddr)
 
 	if (bind(sockfd, (struct sockaddr *) &addr, sizeof addr) < 0)
 		err(EXIT_FAILURE, "binding listener socket to %s", sockaddr);
+
+	if (uid != -1 || gid != -1)
+		if (fchown(sockfd, uid, gid) < 0)
+			err(EXIT_FAILURE, "setting listener socket ownership to %u:%u", uid, gid);
 
 	if (listen(sockfd, 50) < 0)
 		err(EXIT_FAILURE, "listening on socket %s", sockaddr);
@@ -246,11 +310,11 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 	return EXIT_SUCCESS;
 }
 
-static int daemon_loop(const char *sockaddr, char *envp[], int argc, char *argv[])
+static int daemon_loop(const char *sockaddr, char *envp[], int argc, char *argv[], uid_t uid, gid_t gid)
 {
 	int sockfd;
 
-	sockfd = open_listener(sockaddr);
+	sockfd = open_listener(sockaddr, uid, gid);
 	if (sockfd < 0)
 		err(EXIT_FAILURE, "opening listener socket %s", sockaddr);
 
@@ -285,8 +349,10 @@ int main(int argc, char *argv[])
 	char **envp = NULL;
 	size_t envp_nmemb = 0;
 	int opt;
+	uid_t uid = -1;
+	gid_t gid = -1;
 
-	while ((opt = getopt(argc, argv, "s:e:")) != -1)
+	while ((opt = getopt(argc, argv, "s:e:o:")) != -1)
 	{
 		switch (opt)
 		{
@@ -297,6 +363,10 @@ int main(int argc, char *argv[])
 			envp = reallocarray(envp, ++envp_nmemb + 1, sizeof(char *));
 			envp[envp_nmemb - 1] = strdup(optarg);
 			envp[envp_nmemb] = NULL;
+		case 'o':
+			if (!parse_owner_spec(optarg, &uid, &gid))
+				errx(EXIT_FAILURE, "invalid owner spec: %s", optarg);
+			break;
 		default:
 			break;
 		}
@@ -307,5 +377,5 @@ int main(int argc, char *argv[])
 		usage();
 	}
 
-	return daemon_loop(sockaddr, envp, argc, argv);
+	return daemon_loop(sockaddr, envp, argc, argv, uid, gid);
 }
