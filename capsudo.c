@@ -19,14 +19,58 @@
 #include <alloca.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/ioctl.h>
+#include <termios.h>
+#include <poll.h>
+#include <signal.h>
+#include <pty.h>
 
 #include "capsudo-common.h"
+
+static int pty_ourside = -1;
+static int pty_theirside = -1;
+static struct termios saved_tio;
+static bool have_saved_tio = false;
 
 [[noreturn]]
 static void usage(void)
 {
 	fprintf(stderr, "usage: capsudo -s socket [-e key=value...] [args]\n");
 	exit(EXIT_FAILURE);
+}
+
+static void restore_tty(void)
+{
+	if (have_saved_tio)
+		tcsetattr(STDIN_FILENO, TCSANOW, &saved_tio);
+}
+
+static void handle_sigwinch(int sig)
+{
+	(void) sig;
+
+	if (pty_ourside < 0)
+		return;
+
+	struct winsize wsz;
+	if (!ioctl(STDIN_FILENO, TIOCGWINSZ, &wsz))
+		ioctl(pty_ourside, TIOCSWINSZ, &wsz);
+}
+
+static bool setup_pty(void)
+{
+	struct winsize wsz;
+
+	if (!tcgetattr(STDIN_FILENO, &saved_tio))
+		have_saved_tio = true;
+
+	if (ioctl(STDIN_FILENO, TIOCGWINSZ, &wsz) < 0)
+		return false;
+
+	if (openpty(&pty_ourside, &pty_theirside, NULL, &saved_tio, &wsz) < 0)
+		return false;
+
+	return true;
 }
 
 static int connect_to_daemon(const char *sockaddr)
@@ -101,9 +145,9 @@ static bool send_file_descriptors(int sockfd)
 	};
 
 	int fdtable[3] = {
-		STDIN_FILENO,
-		STDOUT_FILENO,
-		STDERR_FILENO,
+		pty_theirside,
+		pty_theirside,
+		pty_theirside,
 	};
 
 	memcpy(CMSG_DATA(cmsg), &fdtable, sizeof(fdtable));
@@ -152,38 +196,95 @@ static int setup_connection(const char *sockaddr, char *envp[], int argc, char *
 static int client_loop(const char *sockaddr, char *envp[], int argc, char *argv[])
 {
 	int sockfd;
-	struct capsudo_message msghdr;
+
+	if (!setup_pty())
+		err(EXIT_FAILURE, "failed to allocate pty");
+
+	if (have_saved_tio)
+	{
+		struct termios raw = saved_tio;
+
+		cfmakeraw(&raw);
+		tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+		atexit(restore_tty);
+	}
+
+	struct sigaction sa = {
+		.sa_handler = handle_sigwinch,
+	};
+
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = SA_RESTART;
+	sigaction(SIGWINCH, &sa, NULL);
+	handle_sigwinch(SIGWINCH);
 
 	sockfd = setup_connection(sockaddr, envp, argc, argv);
 
-	while (read(sockfd, &msghdr, sizeof msghdr) == sizeof(msghdr))
+	for (;;)
 	{
-		struct capsudo_message *msg = alloca(sizeof(struct capsudo_message) + msghdr.length);
+		struct pollfd pfd[3] = {
+			{ .fd = STDIN_FILENO,	.events = POLLIN },
+			{ .fd = pty_ourside,	.events = POLLIN },
+			{ .fd = sockfd,		.events = POLLIN },
+		};
 
-		memcpy(msg, &msghdr, sizeof(struct capsudo_message));
-
-		size_t nread;
-		if ((nread = read(sockfd, msg->data, msg->length)) != msg->length)
+		if (poll(pfd, 3, -1) < 0)
 		{
 			close(sockfd);
-			err(EXIT_FAILURE, "unable to read %zu bytes from daemon, got %zu", msg->length, nread);
+			return EXIT_FAILURE;
 		}
 
-		switch (msg->fieldtype)
+		if (pfd[0].revents & POLLIN)
 		{
-		case CAPSUDO_EXIT:
-			int exitcode = *(int *) msg->data;
+			char buf[8192];
 
-			close(sockfd);
-			return exitcode;
-		default:
+			ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
+			if (n > 0)
+				write(pty_ourside, buf, (size_t) n);
+		}
+
+		if (pfd[1].revents & POLLIN)
+		{
+			char buf[8192];
+
+			ssize_t n = read(pty_ourside, buf, sizeof buf);
+			if (n > 0)
+				write(STDOUT_FILENO, buf, (size_t) n);
+		}
+
+		if (pfd[2].revents & POLLIN)
+		{
+			struct capsudo_message msghdr;
+
+			if (read(sockfd, &msghdr, sizeof msghdr) != sizeof(msghdr))
+			{
+				close(sockfd);
+				exit(EXIT_FAILURE);
+			}
+
+			struct capsudo_message *msg = alloca(sizeof(msghdr) + msghdr.length);
+			memcpy(msg, &msghdr, sizeof(msghdr));
+
+			ssize_t n = read(sockfd, msg->data, msg->length);
+			if (n != msg->length)
+			{
+				close(sockfd);
+				err(EXIT_FAILURE, "failed to read %zu bytes from the daemon, got %zu", msg->length, n);
+			}
+
+			if (msg->fieldtype == CAPSUDO_EXIT)
+			{
+				int exitcode = *(int *) msg->data;
+
+				close(sockfd);
+				return exitcode;
+			}
+
 			fprintf(stderr, "capsudo: ignoring unexpected message %d, length %zu\n", msg->fieldtype, msg->length);
-			break;
 		}
 	}
 
 	close(sockfd);
-
 	return EXIT_SUCCESS;
 }
 

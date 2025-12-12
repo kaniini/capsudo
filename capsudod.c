@@ -17,13 +17,15 @@
 #include <string.h>
 #include <stdbool.h>
 #include <alloca.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
-#include <spawn.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <termios.h>
+#include <signal.h>
 
 #include "capsudo-common.h"
 
@@ -187,24 +189,48 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 		session.argv[1] = NULL;
 	}
 
-	posix_spawn_file_actions_t file_actions;
-	posix_spawn_file_actions_init(&file_actions);
-	posix_spawn_file_actions_adddup2(&file_actions, session.client_stdin, STDIN_FILENO);
-	posix_spawn_file_actions_adddup2(&file_actions, session.client_stdout, STDOUT_FILENO);
-	posix_spawn_file_actions_adddup2(&file_actions, session.client_stderr, STDERR_FILENO);
+	pid_t childpid = fork();
+	if (childpid < 0)
+		err(EXIT_FAILURE, "forking child process");
 
-	pid_t childpid;
-	if (posix_spawnp(&childpid, session.argv[0], &file_actions, NULL, session.argv, session.envp) < 0)
+	if (childpid == 0)
 	{
-		posix_spawn_file_actions_destroy(&file_actions);
-		return EXIT_FAILURE;
+		if (setsid() < 0)
+			_exit(127);
+
+		if (dup2(session.client_stdin, STDIN_FILENO) < 0)
+			_exit(127);
+
+		if (dup2(session.client_stdout, STDOUT_FILENO) < 0)
+			_exit(127);
+
+		if (dup2(session.client_stderr, STDERR_FILENO) < 0)
+			_exit(127);
+
+		if (ioctl(STDIN_FILENO, TIOCSCTTY, 0) < 0)
+			_exit(127);
+
+		struct sigaction old, ignore = {
+			.sa_handler = SIG_IGN,
+		};
+
+		sigaction(SIGTTOU, &ignore, &old);
+		tcsetpgrp(STDIN_FILENO, getpgrp());
+		sigaction(SIGTTOU, &old, NULL);
+
+		execvpe(session.argv[0], session.argv, session.envp);
+		_exit(127);
 	}
 
-	posix_spawn_file_actions_destroy(&file_actions);
-
-	int exitcode;
-	if (waitpid(childpid, &exitcode, 0) < 0)
+	int status;
+	if (waitpid(childpid, &status, 0) < 0)
 		return EXIT_FAILURE;
+
+	int exitcode = EXIT_FAILURE;
+	if (WIFEXITED(status))
+		exitcode = WEXITSTATUS(status);
+	else if (WIFSIGNALED(status))
+		exitcode = 128 + WTERMSIG(status);
 
 	if (!write_exitcode(session.clientfd, CAPSUDO_EXIT, WEXITSTATUS(exitcode)))
 		return EXIT_FAILURE;
