@@ -20,6 +20,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <poll.h>
 #include <fcntl.h>
@@ -48,8 +49,23 @@ struct capsudo_session {
 [[noreturn]]
 static void usage(void)
 {
-	fprintf(stderr, "usage: capsudod -s socket [-o user[:group]] [-e key=value...] [program]\n");
+	fprintf(stderr, "usage: capsudod -s socket [-o user[:group]] [-m mode] [-e key=value...] [program]\n");
 	exit(EXIT_FAILURE);
+}
+
+static bool parse_mode(const char *spec, mode_t *mode_out)
+{
+	char *end = NULL;
+	unsigned long val = strtoul(spec, &end, 8);
+
+	if (errno || end == spec || (end != NULL && *end != '\0'))
+		return false;
+
+	if (val > 07777UL)
+		return false;
+
+	*mode_out = (mode_t) val;
+	return true;
 }
 
 static bool parse_owner_spec(const char *spec, uid_t *uid_out, gid_t *gid_out)
@@ -110,7 +126,7 @@ static bool parse_owner_spec(const char *spec, uid_t *uid_out, gid_t *gid_out)
 	return true;
 }
 
-static int open_listener(const char *sockaddr, uid_t uid, gid_t gid)
+static int open_listener(const char *sockaddr, uid_t uid, gid_t gid, mode_t mode)
 {
 	int sockfd;
 	struct sockaddr_un addr = {
@@ -128,8 +144,11 @@ static int open_listener(const char *sockaddr, uid_t uid, gid_t gid)
 		err(EXIT_FAILURE, "binding listener socket to %s", sockaddr);
 
 	if (uid != -1 || gid != -1)
-		if (fchown(sockfd, uid, gid) < 0)
+		if (chown(sockaddr, uid, gid) < 0)
 			err(EXIT_FAILURE, "setting listener socket ownership to %u:%u", uid, gid);
+
+	if (chmod(sockaddr, mode) < 0)
+		err(EXIT_FAILURE, "setting listener socket permissions to %o", mode);
 
 	if (listen(sockfd, 50) < 0)
 		err(EXIT_FAILURE, "listening on socket %s", sockaddr);
@@ -310,11 +329,11 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 	return EXIT_SUCCESS;
 }
 
-static int daemon_loop(const char *sockaddr, char *envp[], int argc, char *argv[], uid_t uid, gid_t gid)
+static int daemon_loop(const char *sockaddr, char *envp[], int argc, char *argv[], uid_t uid, gid_t gid, mode_t mode)
 {
 	int sockfd;
 
-	sockfd = open_listener(sockaddr, uid, gid);
+	sockfd = open_listener(sockaddr, uid, gid, mode);
 	if (sockfd < 0)
 		err(EXIT_FAILURE, "opening listener socket %s", sockaddr);
 
@@ -351,8 +370,9 @@ int main(int argc, char *argv[])
 	int opt;
 	uid_t uid = -1;
 	gid_t gid = -1;
+	mode_t mode = 0770;
 
-	while ((opt = getopt(argc, argv, "s:e:o:")) != -1)
+	while ((opt = getopt(argc, argv, "s:e:o:m:")) != -1)
 	{
 		switch (opt)
 		{
@@ -367,6 +387,10 @@ int main(int argc, char *argv[])
 			if (!parse_owner_spec(optarg, &uid, &gid))
 				errx(EXIT_FAILURE, "invalid owner spec: %s", optarg);
 			break;
+		case 'm':
+			if (!parse_mode(optarg, &mode))
+				errx(EXIT_FAILURE, "invalid mode spec: %s", optarg);
+			break;
 		default:
 			break;
 		}
@@ -377,5 +401,5 @@ int main(int argc, char *argv[])
 		usage();
 	}
 
-	return daemon_loop(sockaddr, envp, argc, argv, uid, gid);
+	return daemon_loop(sockaddr, envp, argc, argv, uid, gid, mode);
 }
