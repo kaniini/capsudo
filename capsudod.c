@@ -55,6 +55,8 @@ static void usage(void)
 
 static bool parse_mode(const char *spec, mode_t *mode_out)
 {
+	errno = 0;
+
 	char *end = NULL;
 	unsigned long val = strtoul(spec, &end, 8);
 
@@ -82,6 +84,8 @@ static bool parse_owner_spec(const char *spec, uid_t *uid_out, gid_t *gid_out)
 
 	if (user != NULL && *user)
 	{
+		errno = 0;
+
 		char *end = NULL;
 		unsigned long val = strtoul(user, &end, 10);
 
@@ -101,6 +105,8 @@ static bool parse_owner_spec(const char *spec, uid_t *uid_out, gid_t *gid_out)
 
 	if (group != NULL && *group)
 	{
+		errno = 0;
+
 		char *end = NULL;
 		unsigned long val = strtoul(group, &end, 10);
 
