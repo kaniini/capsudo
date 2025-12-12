@@ -1,3 +1,4 @@
+PREFIX ?= /usr/local
 CFLAGS ?= -O2 -Wall -pedantic -std=gnu2x -ggdb3
 PROGS := capsudo capsudod
 
@@ -19,5 +20,5 @@ clean:
 	rm -f ${PROGS} ${CAPSUDO_OBJS} ${CAPSUDOD_OBJS}
 
 install:
-	install -Dm755 capsudo ${DESTDIR}/bin/capsudo
-	install -Dm755 capsudod ${DESTDIR}/bin/capsudod
+	install -Dm755 capsudo ${DESTDIR}${PREFIX}/bin/capsudo
+	install -Dm755 capsudod ${DESTDIR}${PREFIX}/bin/capsudod
