@@ -99,23 +99,40 @@ static int connect_to_daemon(const char *sockaddr)
 	return sockfd;
 }
 
-static bool write_message(int sockfd, enum capsudo_fieldtype fieldtype, const char *msgbuf)
+static bool write_raw_message(int sockfd, struct capsudo_message *msg)
 {
 	size_t nwritten, xwritten;
-	struct capsudo_message *envmsg = alloca(sizeof(struct capsudo_message) + strlen(msgbuf) + 1);
 
-	envmsg->fieldtype = fieldtype;
-	envmsg->length = strlen(msgbuf) + 1;
-	strlcpy(envmsg->data, msgbuf, envmsg->length);
-
-	xwritten = sizeof(struct capsudo_message) + envmsg->length;
-	if ((nwritten = write(sockfd, envmsg, xwritten)) != xwritten)
+	xwritten = sizeof(struct capsudo_message) + msg->length;
+	if ((nwritten = write(sockfd, msg, xwritten)) != xwritten)
 	{
 		close(sockfd);
 		err(EXIT_FAILURE, "failed to write %zu bytes to capsudo daemon, wrote %zu instead", xwritten, nwritten);
 	}
 
 	return true;
+}
+
+static bool write_message(int sockfd, enum capsudo_fieldtype fieldtype, const char *msgbuf)
+{
+	struct capsudo_message *envmsg = alloca(sizeof(struct capsudo_message) + strlen(msgbuf) + 1);
+
+	envmsg->fieldtype = fieldtype;
+	envmsg->length = strlen(msgbuf) + 1;
+	strlcpy(envmsg->data, msgbuf, envmsg->length);
+
+	return write_raw_message(sockfd, envmsg);
+}
+
+static bool send_sessiontype(int sockfd)
+{
+	struct capsudo_message *msg = alloca(sizeof(struct capsudo_message) + sizeof(enum capsudo_sessiontype));
+
+	msg->fieldtype = CAPSUDO_SESSION_TYPE;
+	msg->length = sizeof(enum capsudo_sessiontype);
+	memcpy(msg->data, &sessiontype, sizeof(enum capsudo_sessiontype));
+
+	return write_raw_message(sockfd, msg);
 }
 
 static bool send_file_descriptors(int sockfd)
@@ -150,34 +167,15 @@ static bool send_file_descriptors(int sockfd)
 	};
 
 	int fdtable[3] = {
-		pty_theirside,
-		pty_theirside,
-		pty_theirside,
+		sessiontype == CAPSUDO_INTERACTIVE ? pty_theirside : STDIN_FILENO,
+		sessiontype == CAPSUDO_INTERACTIVE ? pty_theirside : STDOUT_FILENO,
+		sessiontype == CAPSUDO_INTERACTIVE ? pty_theirside : STDERR_FILENO,
 	};
 
 	memcpy(CMSG_DATA(cmsg), &fdtable, sizeof(fdtable));
 
 	if (sendmsg(sockfd, &msg, 0) < 0)
 		return false;
-
-	return true;
-}
-
-static bool send_sessiontype(int sockfd)
-{
-	size_t nwritten, xwritten;
-	struct capsudo_message *msg = alloca(sizeof(struct capsudo_message) + sizeof(enum capsudo_sessiontype));
-
-	msg->fieldtype = CAPSUDO_SESSION_TYPE;
-	msg->length = sizeof(enum capsudo_sessiontype);
-	memcpy(msg->data, &sessiontype, sizeof(enum capsudo_sessiontype));
-
-	xwritten = sizeof(struct capsudo_message) + msg->length;
-	if ((nwritten = write(sockfd, msg, xwritten)) != xwritten)
-	{
-		close(sockfd);
-		err(EXIT_FAILURE, "failed to write %zu bytes to capsudo daemon, wrote %zu instead", xwritten, nwritten);
-	}
 
 	return true;
 }
@@ -220,7 +218,47 @@ static int setup_connection(const char *sockaddr, char *envp[], int argc, char *
 	return sockfd;
 }
 
-static int client_loop(const char *sockaddr, char *envp[], int argc, char *argv[])
+static void handle_incoming_message(int sockfd)
+{
+	struct capsudo_message msghdr;
+
+	if (read(sockfd, &msghdr, sizeof msghdr) != sizeof(msghdr))
+	{
+		close(sockfd);
+		exit(EXIT_FAILURE);
+	}
+
+	struct capsudo_message *msg = alloca(sizeof(msghdr) + msghdr.length);
+	memcpy(msg, &msghdr, sizeof(msghdr));
+
+	ssize_t n = read(sockfd, msg->data, msg->length);
+	if (n != msg->length)
+	{
+		close(sockfd);
+		err(EXIT_FAILURE, "failed to read %zu bytes from the daemon, got %zu", msg->length, n);
+	}
+
+	if (msg->fieldtype == CAPSUDO_EXIT)
+	{
+		int exitcode = *(int *) msg->data;
+
+		close(sockfd);
+		exit(exitcode);
+	}
+
+	fprintf(stderr, "capsudo: ignoring unexpected message %d, length %zu\n", msg->fieldtype, msg->length);
+}
+
+static void relay_buffer(int fromfd, int tofd)
+{
+	char buf[8192];
+
+	ssize_t n = read(fromfd, buf, sizeof buf);
+	if (n > 0)
+		write(tofd, buf, (size_t) n);
+}
+
+static int client_loop_interactive(const char *sockaddr, char *envp[], int argc, char *argv[])
 {
 	int sockfd;
 
@@ -262,53 +300,39 @@ static int client_loop(const char *sockaddr, char *envp[], int argc, char *argv[
 		}
 
 		if (pfd[0].revents & POLLIN)
-		{
-			char buf[8192];
-
-			ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
-			if (n > 0)
-				write(pty_ourside, buf, (size_t) n);
-		}
+			relay_buffer(STDIN_FILENO, pty_ourside);
 
 		if (pfd[1].revents & POLLIN)
-		{
-			char buf[8192];
-
-			ssize_t n = read(pty_ourside, buf, sizeof buf);
-			if (n > 0)
-				write(STDOUT_FILENO, buf, (size_t) n);
-		}
+			relay_buffer(pty_ourside, STDOUT_FILENO);
 
 		if (pfd[2].revents & POLLIN)
+			handle_incoming_message(sockfd);
+	}
+
+	close(sockfd);
+	return EXIT_SUCCESS;
+}
+
+static int client_loop_noninteractive(const char *sockaddr, char *envp[], int argc, char *argv[])
+{
+	int sockfd;
+
+	sockfd = setup_connection(sockaddr, envp, argc, argv);
+
+	for (;;)
+	{
+		struct pollfd pfd[1] = {
+			{ .fd = sockfd,	.events = POLLIN },
+		};
+
+		if (poll(pfd, 1, -1) < 0)
 		{
-			struct capsudo_message msghdr;
-
-			if (read(sockfd, &msghdr, sizeof msghdr) != sizeof(msghdr))
-			{
-				close(sockfd);
-				exit(EXIT_FAILURE);
-			}
-
-			struct capsudo_message *msg = alloca(sizeof(msghdr) + msghdr.length);
-			memcpy(msg, &msghdr, sizeof(msghdr));
-
-			ssize_t n = read(sockfd, msg->data, msg->length);
-			if (n != msg->length)
-			{
-				close(sockfd);
-				err(EXIT_FAILURE, "failed to read %zu bytes from the daemon, got %zu", msg->length, n);
-			}
-
-			if (msg->fieldtype == CAPSUDO_EXIT)
-			{
-				int exitcode = *(int *) msg->data;
-
-				close(sockfd);
-				return exitcode;
-			}
-
-			fprintf(stderr, "capsudo: ignoring unexpected message %d, length %zu\n", msg->fieldtype, msg->length);
+			close(sockfd);
+			return EXIT_FAILURE;
 		}
+
+		if (pfd[0].revents & POLLIN)
+			handle_incoming_message(sockfd);
 	}
 
 	close(sockfd);
@@ -321,6 +345,7 @@ int main(int argc, char *argv[])
 	char **envp = NULL;
 	size_t envp_nmemb = 0;
 	int opt;
+	int (*loop)(const char *sockaddr, char *envp[], int argc, char *argv[]) = NULL;
 
 	while ((opt = getopt(argc, argv, "ins:e:")) != -1)
 	{
@@ -351,5 +376,6 @@ int main(int argc, char *argv[])
 	if (sessiontype == CAPSUDO_AUTO)
 		sessiontype = determine_session_type();
 
-	return client_loop(sockaddr, envp, argc, argv);
+	loop = sessiontype == CAPSUDO_INTERACTIVE ? client_loop_interactive : client_loop_noninteractive;
+	return loop(sockaddr, envp, argc, argv);
 }
