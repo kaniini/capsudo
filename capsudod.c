@@ -389,6 +389,7 @@ int main(int argc, char *argv[])
 			envp = reallocarray(envp, ++envp_nmemb + 1, sizeof(char *));
 			envp[envp_nmemb - 1] = strdup(optarg);
 			envp[envp_nmemb] = NULL;
+			break;
 		case 'o':
 			if (!parse_owner_spec(optarg, &uid, &gid))
 				errx(EXIT_FAILURE, "invalid owner spec: %s", optarg);
