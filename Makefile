@@ -1,5 +1,5 @@
 PREFIX ?= /usr/local
-CFLAGS ?= -O2 -Wall -pedantic -std=gnu2x -ggdb3
+CFLAGS ?= -D_GNU_SOURCE -O2 -Wall -pedantic -std=gnu2x -ggdb3
 PROGS := capsudo capsudod
 
 CAPSUDO_SRCS := capsudo.c
