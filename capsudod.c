@@ -29,6 +29,7 @@
 #include <signal.h>
 #include <grp.h>
 #include <pwd.h>
+#include <limits.h>
 
 #include "capsudo-common.h"
 
@@ -47,6 +48,8 @@ struct capsudo_session {
 	size_t argv_nmemb;
 	char **envp;
 	size_t envp_nmemb;
+
+	char *secontext;
 };
 
 [[noreturn]]
@@ -163,6 +166,38 @@ static int open_listener(const char *sockaddr, uid_t uid, gid_t gid, mode_t mode
 		err(EXIT_FAILURE, "listening on socket %s", sockaddr);
 
 	return sockfd;
+}
+
+static bool get_client_secontext(struct capsudo_session *session)
+{
+	socklen_t optlen, newoptlen;
+	char secontext[NAME_MAX + 1];
+
+	optlen = sizeof(secontext) - 1;
+	if (getsockopt(session->clientfd, SOL_SOCKET, SO_PEERSEC, secontext, &optlen) < 0)
+		return errno == ENOPROTOOPT;
+
+	session->secontext = calloc(1, optlen + 1);
+
+	if (!session->secontext)
+		return false;
+
+	if (optlen > sizeof(secontext))
+	{
+		newoptlen = optlen;
+		if (getsockopt(session->clientfd, SOL_SOCKET, SO_PEERSEC, session->secontext, &newoptlen) != 0 || newoptlen != optlen)
+			return false;
+	} else
+		memcpy(session->secontext, secontext, optlen);
+
+	session->secontext[optlen] = '\0';
+	if (!*session->secontext)
+	{
+		free(session->secontext);
+		session->secontext = NULL;
+	}
+
+	return true;
 }
 
 static bool receive_configuration(struct capsudo_session *session)
@@ -311,6 +346,8 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 		}
 	}
 
+	if (!get_client_secontext(&session))
+		return EXIT_FAILURE;
 	if (!receive_configuration(&session))
 		return EXIT_FAILURE;
 
@@ -351,6 +388,17 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 			sigaction(SIGTTOU, &ignore, &old);
 			tcsetpgrp(STDIN_FILENO, getpgrp());
 			sigaction(SIGTTOU, &old, NULL);
+		}
+
+		if (session.secontext)
+		{
+			size_t selen = strlen(session.secontext);
+			int attrfd;
+
+			attrfd = open("/proc/self/attr/exec", O_WRONLY);
+			if (attrfd < 0 || write(attrfd, session.secontext, selen) != selen)
+				fatality(session.clientfd, 127, "unable to set selinux context: %s", strerror(errno));
+			close(attrfd);
 		}
 
 		execvpe(session.argv[0], session.argv, session.envp);
