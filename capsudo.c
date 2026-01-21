@@ -45,6 +45,7 @@ static char *prompt_for_secret(const char *prompt)
 		prompt = "capsudo secret: ";
 
 	char *p = getpass(prompt);
+	dprintf(STDERR_FILENO, "\r");
 	if (p == NULL || !*p)
 		return NULL;
 
@@ -358,11 +359,17 @@ static int client_loop_interactive(const char *sockaddr, char *envp[], int argc,
 				close(sockfd);
 
 				if (secret != NULL)
-					errx(EXIT_FAILURE, "capsudo: secret invalid\n");
+				{
+					restore_tty();
+					errx(EXIT_FAILURE, "provided secret is invalid");
+				}
 
 				secret = prompt_for_secret(prompt);
 				if (secret == NULL)
-					errx(EXIT_FAILURE, "capsudo: secret required\n");
+				{
+					restore_tty();
+					errx(EXIT_FAILURE, "secret required, but none was provided");
+				}
 
 				sockfd = setup_connection(sockaddr, envp, argc, argv, secret);
 			}
