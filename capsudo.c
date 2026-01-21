@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <err.h>
+#include <errno.h>
 #include <string.h>
 #include <stdbool.h>
 #include <alloca.h>
@@ -32,6 +33,23 @@ static int pty_theirside = -1;
 static struct termios saved_tio;
 static bool have_saved_tio = false;
 static enum capsudo_sessiontype sessiontype = CAPSUDO_AUTO;
+
+enum capsudo_sessionresult {
+	CAPSUDO_SESSION_OK,
+	CAPSUDO_SESSION_SECRET_REQUIRED,
+};
+
+static char *prompt_for_secret(const char *prompt)
+{
+	if (prompt == NULL || !*prompt)
+		prompt = "capsudo secret: ";
+
+	char *p = getpass(prompt);
+	if (p == NULL || !*p)
+		return NULL;
+
+	return strdup(p);
+}
 
 static enum capsudo_sessiontype determine_session_type(void)
 {
@@ -180,7 +198,7 @@ static bool send_file_descriptors(int sockfd)
 	return true;
 }
 
-static int setup_connection(const char *sockaddr, char *envp[], int argc, char *argv[])
+static int setup_connection(const char *sockaddr, char *envp[], int argc, char *argv[], const char *secret)
 {
 	int sockfd;
 	int envi, argi;
@@ -189,6 +207,12 @@ static int setup_connection(const char *sockaddr, char *envp[], int argc, char *
 	if (sockfd < 0)
 	{
 		err(EXIT_FAILURE, "unable to connect to capsudo daemon at %s", sockaddr);
+	}
+
+	if (secret != NULL)
+	{
+		if (!write_message(sockfd, CAPSUDO_SECRET, secret))
+			return -1;
 	}
 
 	if (envp != NULL)
@@ -218,7 +242,7 @@ static int setup_connection(const char *sockaddr, char *envp[], int argc, char *
 	return sockfd;
 }
 
-static void handle_incoming_message(int sockfd)
+static enum capsudo_sessionresult handle_incoming_message(int sockfd, char **errmsg)
 {
 	struct capsudo_message msghdr;
 
@@ -240,20 +264,31 @@ static void handle_incoming_message(int sockfd)
 
 	switch (msg->fieldtype)
 	{
+		case CAPSUDO_UNAUTHORIZED:
+		{
+			*errmsg = strdup(msg->data);
+			close(sockfd);
+			return CAPSUDO_SESSION_SECRET_REQUIRED;
+		}
+
 		case CAPSUDO_EXIT:
 		{
 			int exitcode = *(int *) msg->data;
 
 			close(sockfd);
 			exit(exitcode);
+			break;
 		}
 
 		case CAPSUDO_ERROR:
 			fprintf(stderr, "capsudo: error: %s\n", msg->data);
+			break;
 
 		default:
 			fprintf(stderr, "capsudo: ignoring unexpected message %d, length %zu\n", msg->fieldtype, msg->length);
 	}
+
+	return CAPSUDO_SESSION_OK;
 }
 
 static void relay_buffer(int fromfd, int tofd)
@@ -268,6 +303,7 @@ static void relay_buffer(int fromfd, int tofd)
 static int client_loop_interactive(const char *sockaddr, char *envp[], int argc, char *argv[])
 {
 	int sockfd;
+	char *secret = NULL;
 
 	if (!setup_pty())
 		err(EXIT_FAILURE, "failed to allocate pty");
@@ -290,7 +326,7 @@ static int client_loop_interactive(const char *sockaddr, char *envp[], int argc,
 	sigaction(SIGWINCH, &sa, NULL);
 	handle_sigwinch(SIGWINCH);
 
-	sockfd = setup_connection(sockaddr, envp, argc, argv);
+	sockfd = setup_connection(sockaddr, envp, argc, argv, secret);
 
 	for (;;)
 	{
@@ -313,21 +349,48 @@ static int client_loop_interactive(const char *sockaddr, char *envp[], int argc,
 			relay_buffer(pty_ourside, STDOUT_FILENO);
 
 		if (pfd[2].revents & POLLIN)
-			handle_incoming_message(sockfd);
+		{
+			char *prompt = NULL;
+			enum capsudo_sessionresult ret = handle_incoming_message(sockfd, &prompt);
+
+			if (ret == CAPSUDO_SESSION_SECRET_REQUIRED)
+			{
+				close(sockfd);
+
+				if (secret != NULL)
+					errx(EXIT_FAILURE, "capsudo: secret invalid\n");
+
+				secret = prompt_for_secret(prompt);
+				if (secret == NULL)
+					errx(EXIT_FAILURE, "capsudo: secret required\n");
+
+				sockfd = setup_connection(sockaddr, envp, argc, argv, secret);
+			}
+		}
 	}
 
 	close(sockfd);
+
+	if (secret)
+	{
+		explicit_bzero(secret, strlen(secret));
+		free(secret);
+	}
+
 	return EXIT_SUCCESS;
 }
 
 static int client_loop_noninteractive(const char *sockaddr, char *envp[], int argc, char *argv[])
 {
 	int sockfd;
+	char *secret = NULL;
 
-	sockfd = setup_connection(sockaddr, envp, argc, argv);
+	sockfd = setup_connection(sockaddr, envp, argc, argv, secret);
 
 	for (;;)
 	{
+		char *errmsg = NULL;
+
 		struct pollfd pfd[1] = {
 			{ .fd = sockfd,	.events = POLLIN },
 		};
@@ -339,10 +402,17 @@ static int client_loop_noninteractive(const char *sockaddr, char *envp[], int ar
 		}
 
 		if (pfd[0].revents & POLLIN)
-			handle_incoming_message(sockfd);
+			handle_incoming_message(sockfd, &errmsg);
 	}
 
 	close(sockfd);
+
+	if (secret)
+	{
+		explicit_bzero(secret, strlen(secret));
+		free(secret);
+	}
+
 	return EXIT_SUCCESS;
 }
 
