@@ -238,15 +238,22 @@ static void handle_incoming_message(int sockfd)
 		err(EXIT_FAILURE, "failed to read %zu bytes from the daemon, got %zu", msg->length, n);
 	}
 
-	if (msg->fieldtype == CAPSUDO_EXIT)
+	switch (msg->fieldtype)
 	{
-		int exitcode = *(int *) msg->data;
+		case CAPSUDO_EXIT:
+		{
+			int exitcode = *(int *) msg->data;
 
-		close(sockfd);
-		exit(exitcode);
+			close(sockfd);
+			exit(exitcode);
+		}
+
+		case CAPSUDO_ERROR:
+			fprintf(stderr, "capsudo: error: %s\n", msg->data);
+
+		default:
+			fprintf(stderr, "capsudo: ignoring unexpected message %d, length %zu\n", msg->fieldtype, msg->length);
 	}
-
-	fprintf(stderr, "capsudo: ignoring unexpected message %d, length %zu\n", msg->fieldtype, msg->length);
 }
 
 static void relay_buffer(int fromfd, int tofd)
