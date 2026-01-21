@@ -183,7 +183,7 @@ static bool get_client_secontext(struct capsudo_session *session)
 	if (!session->secontext)
 		return false;
 
-	if (optlen > sizeof(secontext))
+	if (optlen >= sizeof(secontext))
 	{
 		newoptlen = optlen;
 		if (getsockopt(session->clientfd, SOL_SOCKET, SO_PEERSEC, session->secontext, &newoptlen) != 0 || newoptlen != optlen)
