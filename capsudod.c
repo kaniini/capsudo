@@ -32,6 +32,9 @@
 
 #include "capsudo-common.h"
 
+static bool no_client_argv = false;
+static bool no_client_env = false;
+
 struct capsudo_session {
 	int clientfd;
 	int client_stdin;
@@ -49,7 +52,7 @@ struct capsudo_session {
 [[noreturn]]
 static void usage(void)
 {
-	fprintf(stderr, "usage: capsudod -s socket [-o user[:group]] [-m mode] [-e key=value...] [program]\n");
+	fprintf(stderr, "usage: capsudod -s socket [-fE] [-o user[:group]] [-m mode] [-e key=value...] [program]\n");
 	exit(EXIT_FAILURE);
 }
 
@@ -200,11 +203,17 @@ static bool receive_configuration(struct capsudo_session *session)
 		switch (msg->fieldtype)
 		{
 		case CAPSUDO_ARG:
+			if (no_client_argv)
+				continue;
+
 			session->argv = reallocarray(session->argv, ++session->argv_nmemb + 1, sizeof(char *));
 			session->argv[session->argv_nmemb - 1] = strdup(msg->data);
 			session->argv[session->argv_nmemb] = NULL;
 			break;
 		case CAPSUDO_ENV:
+			if (no_client_env)
+				continue;
+
 			session->envp = reallocarray(session->envp, ++session->envp_nmemb + 1, sizeof(char *));
 			session->envp[session->envp_nmemb - 1] = strdup(msg->data);
 			session->envp[session->envp_nmemb] = NULL;
@@ -407,10 +416,16 @@ int main(int argc, char *argv[])
 	gid_t gid = -1;
 	mode_t mode = 0770;
 
-	while ((opt = getopt(argc, argv, "s:e:o:m:")) != -1)
+	while ((opt = getopt(argc, argv, "s:e:o:m:fE")) != -1)
 	{
 		switch (opt)
 		{
+		case 'f':
+			no_client_argv = true;
+			break;
+		case 'E':
+			no_client_env = true;
+			break;
 		case 's':
 			sockaddr = optarg;
 			break;
