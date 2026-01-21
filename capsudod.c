@@ -170,6 +170,7 @@ static int open_listener(const char *sockaddr, uid_t uid, gid_t gid, mode_t mode
 
 static bool get_client_secontext(struct capsudo_session *session)
 {
+#ifdef SO_PEERSEC
 	socklen_t optlen, newoptlen;
 	char secontext[NAME_MAX + 1];
 
@@ -196,6 +197,7 @@ static bool get_client_secontext(struct capsudo_session *session)
 		free(session->secontext);
 		session->secontext = NULL;
 	}
+#endif
 
 	return true;
 }
