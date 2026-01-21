@@ -19,6 +19,7 @@ enum capsudo_fieldtype {
 	CAPSUDO_EXIT = 3,
 	CAPSUDO_FD = 4,
 	CAPSUDO_SESSION_TYPE = 5,
+	CAPSUDO_ERROR = 6,
 	CAPSUDO_END = 255,
 };
 

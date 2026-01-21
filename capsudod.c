@@ -249,6 +249,35 @@ static bool write_exitcode(int sockfd, enum capsudo_fieldtype fieldtype, int exi
 	return true;
 }
 
+static void fatality(int clientfd, int errorcode, char *errfmt, ...)
+{
+	char errbuf[8192];
+	va_list va;
+
+	va_start(va, errfmt);
+	vsnprintf(errbuf, sizeof errbuf, errfmt, va);
+	va_end(va);
+
+	size_t nwritten, xwritten;
+	struct capsudo_message *envmsg = alloca(sizeof(struct capsudo_message) + sizeof(int));
+
+	envmsg->fieldtype = CAPSUDO_ERROR;
+	envmsg->length = strlen(errbuf) + 1;
+	memcpy(envmsg->data, errbuf, envmsg->length);
+
+	xwritten = sizeof(struct capsudo_message) + envmsg->length;
+	if ((nwritten = write(clientfd, envmsg, xwritten)) != xwritten)
+	{
+		close(clientfd);
+		_exit(errorcode);
+	}
+
+	(void) write_exitcode(clientfd, CAPSUDO_EXIT, errorcode);
+
+	close(clientfd);
+	_exit(errorcode);
+}
+
 static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 {
 	int argi, envi;
@@ -290,21 +319,21 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 	if (childpid == 0)
 	{
 		if (setsid() < 0)
-			_exit(127);
+			fatality(session.clientfd, 127, "unable to setsid: %s", strerror(errno));
 
 		if (dup2(session.client_stdin, STDIN_FILENO) < 0)
-			_exit(127);
+			fatality(session.clientfd, 127, "unable to dup stdin: %s", strerror(errno));
 
 		if (dup2(session.client_stdout, STDOUT_FILENO) < 0)
-			_exit(127);
+			fatality(session.clientfd, 127, "unable to dup stdout: %s", strerror(errno));
 
 		if (dup2(session.client_stderr, STDERR_FILENO) < 0)
-			_exit(127);
+			fatality(session.clientfd, 127, "unable to dup stderr: %s", strerror(errno));
 
 		if (session.sessiontype == CAPSUDO_INTERACTIVE)
 		{
 			if (ioctl(STDIN_FILENO, TIOCSCTTY, 0) < 0)
-				_exit(127);
+				fatality(session.clientfd, 127, "unable to set controlling terminal: %s", strerror(errno));
 
 			struct sigaction old, ignore = {
 				.sa_handler = SIG_IGN,
@@ -316,7 +345,7 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 		}
 
 		execvpe(session.argv[0], session.argv, session.envp);
-		_exit(127);
+		fatality(session.clientfd, 127, "unable to execvpe: %s", strerror(errno));
 	}
 
 	int status;
