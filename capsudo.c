@@ -304,6 +304,9 @@ static int client_loop_interactive(const char *sockaddr, char *envp[], int argc,
 
 		if (poll(pfd, 3, -1) < 0)
 		{
+			if (secret != NULL)
+				free(secret);
+
 			close(sockfd);
 			return EXIT_FAILURE;
 		}
@@ -325,6 +328,7 @@ static int client_loop_interactive(const char *sockaddr, char *envp[], int argc,
 
 				if (secret != NULL)
 				{
+					free(secret);
 					restore_tty();
 					errx(EXIT_FAILURE, "provided secret is invalid");
 				}
@@ -338,6 +342,9 @@ static int client_loop_interactive(const char *sockaddr, char *envp[], int argc,
 
 				sockfd = setup_connection(sockaddr, envp, argc, argv, secret);
 			}
+
+			if (prompt != NULL)
+				free(prompt);
 		}
 	}
 
@@ -375,6 +382,9 @@ static int client_loop_noninteractive(const char *sockaddr, char *envp[], int ar
 
 		if (pfd[0].revents & POLLIN)
 			handle_incoming_message(sockfd, &errmsg);
+
+		if (errmsg != NULL)
+			free(errmsg);
 	}
 
 	close(sockfd);

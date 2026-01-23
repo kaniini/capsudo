@@ -277,6 +277,7 @@ static bool receive_configuration(struct capsudo_session *session)
 	return false;
 }
 
+[[noreturn]]
 static void fatality(int clientfd, int errorcode, char *errfmt, ...)
 {
 	char errbuf[8192];
@@ -317,8 +318,6 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 		}
 	}
 
-	if (!get_client_secontext(&session))
-		return EXIT_FAILURE;
 	if (!receive_configuration(&session))
 		return EXIT_FAILURE;
 
@@ -328,6 +327,9 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 		session.argv[0] = strdup("sh");
 		session.argv[1] = NULL;
 	}
+
+	if (!get_client_secontext(&session))
+		return EXIT_FAILURE;
 
 	pid_t childpid = fork();
 	if (childpid < 0)
@@ -361,7 +363,7 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 			sigaction(SIGTTOU, &old, NULL);
 		}
 
-		if (session.secontext)
+		if (session.secontext != NULL)
 		{
 			size_t selen = strlen(session.secontext);
 			int attrfd;
@@ -370,11 +372,16 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 			if (attrfd < 0 || write(attrfd, session.secontext, selen) != selen)
 				fatality(session.clientfd, 127, "unable to set selinux context: %s", strerror(errno));
 			close(attrfd);
+
+			free(session.secontext);
 		}
 
 		execvpe(session.argv[0], session.argv, session.envp);
 		fatality(session.clientfd, 127, "unable to execvpe: %s", strerror(errno));
 	}
+
+	if (session.secontext != NULL)
+		free(session.secontext);
 
 	int status;
 	if (waitpid(childpid, &status, 0) < 0)
