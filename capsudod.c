@@ -425,6 +425,7 @@ static int daemon_loop(const char *sockaddr, char *envp[], int argc, char *argv[
 			exit(child_loop(clientfd, envp, argc, argv));
 			break;
 		default:
+			close(clientfd);
 			break;
 		}
 	}
