@@ -32,6 +32,7 @@
 #include <limits.h>
 
 #include "capsudo-common.h"
+#include "capsudo-message.h"
 
 static bool no_client_argv = false;
 static bool no_client_env = false;
@@ -276,42 +277,6 @@ static bool receive_configuration(struct capsudo_session *session)
 	return false;
 }
 
-static bool write_raw_message(int sockfd, struct capsudo_message *msg)
-{
-	size_t nwritten, xwritten;
-
-	xwritten = sizeof(struct capsudo_message) + msg->length;
-	if ((nwritten = write(sockfd, msg, xwritten)) != xwritten)
-	{
-		close(sockfd);
-		return false;
-	}
-
-	return true;
-}
-
-static bool write_exitcode(int sockfd, enum capsudo_fieldtype fieldtype, int exitcode)
-{
-	struct capsudo_message *envmsg = alloca(sizeof(struct capsudo_message) + sizeof(int));
-
-	envmsg->fieldtype = fieldtype;
-	envmsg->length = sizeof(int);
-	memcpy(envmsg->data, &exitcode, sizeof(int));
-
-	return write_raw_message(sockfd, envmsg);
-}
-
-static bool write_message(int sockfd, enum capsudo_fieldtype fieldtype, const char *msgbuf)
-{
-	struct capsudo_message *envmsg = alloca(sizeof(struct capsudo_message) + strlen(msgbuf) + 1);
-
-	envmsg->fieldtype = fieldtype;
-	envmsg->length = strlen(msgbuf) + 1;
-	strlcpy(envmsg->data, msgbuf, envmsg->length);
-
-	return write_raw_message(sockfd, envmsg);
-}
-
 static void fatality(int clientfd, int errorcode, char *errfmt, ...)
 {
 	char errbuf[8192];
@@ -322,7 +287,7 @@ static void fatality(int clientfd, int errorcode, char *errfmt, ...)
 	va_end(va);
 
 	(void) write_message(clientfd, CAPSUDO_ERROR, errbuf);
-	(void) write_exitcode(clientfd, CAPSUDO_EXIT, errorcode);
+	(void) write_u32_message(clientfd, CAPSUDO_EXIT, (uint32_t) errorcode);
 
 	close(clientfd);
 	_exit(errorcode);
@@ -421,7 +386,7 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 	else if (WIFSIGNALED(status))
 		exitcode = 128 + WTERMSIG(status);
 
-	if (!write_exitcode(session.clientfd, CAPSUDO_EXIT, WEXITSTATUS(exitcode)))
+	if (!write_u32_message(session.clientfd, CAPSUDO_EXIT, (uint32_t) WEXITSTATUS(exitcode)))
 		return EXIT_FAILURE;
 
 	return EXIT_SUCCESS;

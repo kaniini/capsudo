@@ -26,6 +26,7 @@
 #include <signal.h>
 #include <pty.h>
 
+#include "capsudo-message.h"
 #include "capsudo-common.h"
 
 static int pty_ourside = -1;
@@ -118,42 +119,6 @@ static int connect_to_daemon(const char *sockaddr)
 	return sockfd;
 }
 
-static bool write_raw_message(int sockfd, struct capsudo_message *msg)
-{
-	size_t nwritten, xwritten;
-
-	xwritten = sizeof(struct capsudo_message) + msg->length;
-	if ((nwritten = write(sockfd, msg, xwritten)) != xwritten)
-	{
-		close(sockfd);
-		err(EXIT_FAILURE, "failed to write %zu bytes to capsudo daemon, wrote %zu instead", xwritten, nwritten);
-	}
-
-	return true;
-}
-
-static bool write_message(int sockfd, enum capsudo_fieldtype fieldtype, const char *msgbuf)
-{
-	struct capsudo_message *envmsg = alloca(sizeof(struct capsudo_message) + strlen(msgbuf) + 1);
-
-	envmsg->fieldtype = fieldtype;
-	envmsg->length = strlen(msgbuf) + 1;
-	strlcpy(envmsg->data, msgbuf, envmsg->length);
-
-	return write_raw_message(sockfd, envmsg);
-}
-
-static bool send_sessiontype(int sockfd)
-{
-	struct capsudo_message *msg = alloca(sizeof(struct capsudo_message) + sizeof(enum capsudo_sessiontype));
-
-	msg->fieldtype = CAPSUDO_SESSION_TYPE;
-	msg->length = sizeof(enum capsudo_sessiontype);
-	memcpy(msg->data, &sessiontype, sizeof(enum capsudo_sessiontype));
-
-	return write_raw_message(sockfd, msg);
-}
-
 static bool send_file_descriptors(int sockfd)
 {
 	struct capsudo_message fdmsg = {
@@ -231,7 +196,7 @@ static int setup_connection(const char *sockaddr, char *envp[], int argc, char *
 			return -1;
 	}
 
-	if (!send_sessiontype(sockfd))
+	if (!write_u32_message(sockfd, CAPSUDO_SESSION_TYPE, (uint32_t) sessiontype))
 		return -1;
 
 	if (!send_file_descriptors(sockfd))
