@@ -173,6 +173,7 @@ static int setup_connection(const char *sockaddr, char *envp[], int argc, char *
 	sockfd = connect_to_daemon(sockaddr);
 	if (sockfd < 0)
 	{
+		restore_tty();
 		err(EXIT_FAILURE, "unable to connect to capsudo daemon at %s", sockaddr);
 	}
 
@@ -225,6 +226,7 @@ static enum capsudo_sessionresult handle_incoming_message(int sockfd, char **err
 	ssize_t n = read(sockfd, msg->data, msg->length);
 	if (n != msg->length)
 	{
+		restore_tty();
 		close(sockfd);
 		err(EXIT_FAILURE, "failed to read %zu bytes from the daemon, got %zu", msg->length, n);
 	}
