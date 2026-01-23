@@ -2,8 +2,9 @@ CAPSUDO_DEFAULT_SOCK ?= /run/capsudo/default
 PREFIX ?= /usr/local
 CONFDIR ?= /etc
 MANDIR ?= ${PREFIX}/share/man
-CFLAGS ?= -D_GNU_SOURCE -O2 -Wall -pedantic -std=gnu2x -ggdb3
+CFLAGS ?= -O2 -Wall -pedantic -std=gnu2x -ggdb3
 PROGS := capsudo capsudod capsudod-pwauth
+CPPFLAGS += -D_GNU_SOURCE
 
 CAPSUDO_SRCS := capsudo.c capsudo-message.c
 CAPSUDO_OBJS := ${CAPSUDO_SRCS:.c=.o}
