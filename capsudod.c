@@ -139,36 +139,6 @@ static bool parse_owner_spec(const char *spec, uid_t *uid_out, gid_t *gid_out)
 	return true;
 }
 
-static int open_listener(const char *sockaddr, uid_t uid, gid_t gid, mode_t mode)
-{
-	int sockfd;
-	struct sockaddr_un addr = {
-		.sun_family = AF_UNIX,
-	};
-
-	unlink(sockaddr);
-	strlcpy(addr.sun_path, sockaddr, sizeof(addr.sun_path));
-
-	sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (sockfd < 0)
-		err(EXIT_FAILURE, "opening listener socket %s", sockaddr);
-
-	if (bind(sockfd, (struct sockaddr *) &addr, sizeof addr) < 0)
-		err(EXIT_FAILURE, "binding listener socket to %s", sockaddr);
-
-	if (uid != -1 || gid != -1)
-		if (chown(sockaddr, uid, gid) < 0)
-			err(EXIT_FAILURE, "setting listener socket ownership to %u:%u", uid, gid);
-
-	if (chmod(sockaddr, mode) < 0)
-		err(EXIT_FAILURE, "setting listener socket permissions to %o", mode);
-
-	if (listen(sockfd, 50) < 0)
-		err(EXIT_FAILURE, "listening on socket %s", sockaddr);
-
-	return sockfd;
-}
-
 static bool get_client_secontext(struct capsudo_session *session)
 {
 #ifdef SO_PEERSEC
