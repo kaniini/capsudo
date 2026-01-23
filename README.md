@@ -13,7 +13,7 @@ sudo, but [object-capability style][ocap]!
 
 By default it will install to `/usr`.
 
-## Using it
+## Using it from the command-line
 
 Run `capsudod -s socket-path-here` to create a socket and listen on it.
 This socket acts as an *object capability*: anyone who can access the socket
@@ -23,7 +23,7 @@ Run `capsudo -s socket-path-here [arguments]` to *invoke* the object capability 
 The capsudo daemon will accept a connection, stitch everything together and run the program
 bound to the object capability.
 
-## Some quick examples
+## Some quick command-line examples
 
 Allowing anyone in `%wheel` to run any program you want (classical sudo/doas setup on Alpine):
 
@@ -43,3 +43,13 @@ Allowing someone to reboot the machine:
 $ capsudo -s /home/user/reboot-capability
 ```
 
+## Other examples
+
+Consult the [capsudod manual page] for more examples.
+
+   [capsudod manual page]: man/capsudod.8
+
+My blog [rethinking sudo with object capabilities] also has some good examples of
+capability delegation.
+
+   [rethink-sudo]: https://ariadne.space/2025/12/12/rethinking-sudo-with-object-capabilities.html
