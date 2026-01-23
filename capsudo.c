@@ -399,6 +399,39 @@ static int client_loop_noninteractive(const char *sockaddr, char *envp[], int ar
 	return EXIT_SUCCESS;
 }
 
+void append_default_environment(char ***envp, size_t *envp_nmemb)
+{
+	static const char *envnames[] = {
+		"TERM",
+		"LANG",
+		"LC_ALL",
+		"LC_CTYPE",
+		"LC_MESSAGES",
+		"COLORTERM",
+	};
+
+	size_t nmemb = *envp_nmemb;
+	for (size_t i = 0; i < sizeof(envnames) / sizeof(*envnames); i++)
+	{
+		const char *val = getenv(envnames[i]);
+		if (val == NULL)
+			continue;
+
+		size_t envlen = strlen(envnames[i]) + 1 + strlen(val) + 1;
+		char *out = calloc(1, envlen);
+		if (out == NULL)
+			continue;
+
+		snprintf(out, envlen, "%s=%s", envnames[i], val);
+
+		*envp = reallocarray(*envp, ++nmemb + 1, sizeof(char *));
+		(*envp)[nmemb - 1] = out;
+		(*envp)[nmemb] = NULL;
+	}
+
+	*envp_nmemb = nmemb;
+}
+
 int main(int argc, char *argv[])
 {
 	const char *sockaddr = CAPSUDO_DEFAULT_SOCK;
@@ -429,6 +462,8 @@ int main(int argc, char *argv[])
 			break;
 		}
 	}
+
+	append_default_environment(&envp, &envp_nmemb);
 
 	if (sockaddr == NULL)
 		return usage();
