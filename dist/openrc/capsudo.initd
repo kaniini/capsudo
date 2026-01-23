@@ -1,0 +1,113 @@
+#!/sbin/openrc-run
+# capsudo OpenRC service (capsudod or capsudod-pwauth)
+#
+# This script is intended to be cloned under OpenRC dotted service names:
+#   /etc/init.d/capsudo.foo
+#   /etc/init.d/capsudo-pwauth.foo
+#
+# Defaults are derived from RC_SVCNAME:
+#   capsudo.*         -> DAEMON=capsudod
+#   capsudo-pwauth.*  -> DAEMON=capsudod-pwauth
+#
+# Socket defaults:
+#   suffix is portion after first dot, else "default"
+#   SOCKET defaults to /run/capsudo/${suffix}
+#
+# Command model (by design):
+#   capsudod:
+#     capsudod -S $SOCKET -o $SOCKET_OWNER -m $SOCKET_MODE -- $PROGRAM
+#
+#   capsudod-pwauth:
+#     capsudod-pwauth -S $SOCKET -o $SOCKET_OWNER -m $SOCKET_MODE \
+#       -- capsudod $CAPSUDOD_ARGS -- $PROGRAM
+
+name="capsudo (${RC_SVCNAME})"
+description="capsudo capability delegation service"
+supervisor="supervise-daemon"
+supervise_daemon_args="${supervise_daemon_args:---respawn-delay 1 --respawn-max 0}"
+
+depend() {
+	need localmount
+	after bootmisc
+}
+
+derive_suffix() {
+	case "${RC_SVCNAME}" in
+	*.*) echo "${RC_SVCNAME#*.}" ;;
+	*)   echo "default" ;;
+	esac
+}
+
+derive_daemon() {
+	case "${RC_SVCNAME}" in
+	capsudo-pwauth*) echo "capsudod-pwauth" ;;
+	* )              echo "capsudod" ;;
+	esac
+}
+
+start_pre() {
+	local suffix sockdir
+	suffix="$(derive_suffix)"
+
+	# Directory that will hold sockets (and delegated sockets).
+	: "${RUN_DIR:=/run/capsudo}"
+	: "${RUN_DIR_OWNER:=root:root}"
+	: "${RUN_DIR_MODE:=0755}"
+
+	# Socket for this instance (defaults to /run/capsudo/${suffix}).
+	: "${SOCKET:=/run/capsudo/${suffix}}"
+	: "${SOCKET_OWNER:=root:wheel}"
+	: "${SOCKET_MODE:=0770}"
+
+	# Pick daemon based on name unless overridden.
+	: "${DAEMON:=$(derive_daemon)}"
+
+	# Paths (override if your package installs elsewhere).
+	: "${CAPSUDOD_PATH:=/usr/bin/capsudod}"
+	: "${PWAUTH_PATH:=/usr/bin/capsudod-pwauth}"
+
+	# Attenuation: program (and args) executed by the *final* capsudod.
+	# This is appended after --.
+	# Examples:
+	#   PROGRAM="/sbin/rc-service"
+	#   PROGRAM="/usr/bin/capsudo -S /run/capsudo/svc nginx --"
+	: "${PROGRAM:=}"
+
+	# pwauth-only: extra flags to pass to the inner capsudod before its "--".
+	# Example: CAPSUDOD_ARGS="-E -e FOO=bar"
+	: "${CAPSUDOD_ARGS:=}"
+
+	# Ensure the runtime directory exists
+	checkpath -d -o "${RUN_DIR_OWNER}" -m "${RUN_DIR_MODE}" "${RUN_DIR}" || return 1
+
+	# Ensure the socket's parent directory exists (in case SOCKET is outside RUN_DIR)
+	sockdir="$(dirname -- "${SOCKET}")"
+	checkpath -d -o "${RUN_DIR_OWNER}" -m "${RUN_DIR_MODE}" "${sockdir}" || return 1
+
+	case "${DAEMON}" in
+	capsudod)
+		command="${CAPSUDOD_PATH}"
+
+		if [ -n "${PROGRAM}" ]; then
+			command_args="-S ${SOCKET} -o ${SOCKET_OWNER} -m ${SOCKET_MODE} -- ${PROGRAM}"
+		else
+			command_args="-S ${SOCKET} -o ${SOCKET_OWNER} -m ${SOCKET_MODE}"
+		fi
+		;;
+
+	capsudod-pwauth)
+		command="${PWAUTH_PATH}"
+
+		if [ -n "${PROGRAM}" ]; then
+			command_args="-S ${SOCKET} -o ${SOCKET_OWNER} -m ${SOCKET_MODE} -- capsudod ${CAPSUDOD_ARGS} -- ${PROGRAM}"
+		else
+			command_args="-S ${SOCKET} -o ${SOCKET_OWNER} -m ${SOCKET_MODE} -- capsudod ${CAPSUDOD_ARGS}"
+		fi
+		;;
+
+	*)
+		eerror "Unknown DAEMON=${DAEMON} (expected capsudod or capsudod-pwauth)"
+		return 1
+		;;
+	esac
+}

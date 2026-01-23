@@ -1,0 +1,41 @@
+# capsudo OpenRC configuration template
+#
+# Copy to:
+#   /etc/conf.d/capsudo.foo
+#   /etc/conf.d/capsudo-pwauth.foo
+
+# Runtime parent directory for sockets
+RUN_DIR="/run/capsudo"
+RUN_DIR_OWNER="root:root"
+RUN_DIR_MODE="0755"
+
+# Socket path for this instance.
+# If unset, defaults to /run/capsudo/<suffix>, where suffix is after the first dot
+# in the service name (e.g. capsudo.svc -> /run/capsudo/svc).
+# SOCKET="/run/capsudo/default"
+
+# Socket ownership and permissions
+SOCKET_OWNER="root:wheel"
+SOCKET_MODE="0770"
+
+# Override daemon selection if desired:
+# DAEMON="capsudod" or "capsudod-pwauth"
+# (Normally derived from service name prefix.)
+# DAEMON="capsudod"
+
+# Paths (adjust if installed elsewhere)
+CAPSUDOD_PATH="/usr/sbin/capsudod"
+PWAUTH_PATH="/usr/sbin/capsudod-pwauth"
+
+# Attenuation: the program (and args) executed by the final capsudod.
+# Appended after "--".
+# Examples:
+#   PROGRAM="/sbin/rc-service"
+#   PROGRAM="/sbin/rc-service nginx"
+#   PROGRAM="/usr/bin/capsudo -S /run/capsudo/svc nginx --"
+PROGRAM=""
+
+# pwauth-only: extra flags passed to the inner capsudod (before its "--").
+# Example:
+#   CAPSUDOD_ARGS="-E -e FOO=bar"
+CAPSUDOD_ARGS=""
