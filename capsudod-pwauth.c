@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <pwd.h>
 #include <shadow.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -242,6 +243,8 @@ static void handle_client(int sockfd, int clientfd, const char *user, char **cap
 int main(int argc, char **argv)
 {
 	int opt;
+
+	signal(SIGCHLD, SIG_IGN);
 
 	while ((opt = getopt(argc, argv, "S:d:o:m:")) != -1)
 	{
