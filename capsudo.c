@@ -438,9 +438,12 @@ int main(int argc, char *argv[])
 	char **envp = NULL;
 	size_t envp_nmemb = 0;
 	int opt;
+	bool sflag = false;
+	char *sh;
+	char *shargv[2] = { NULL, NULL };
 	int (*loop)(const char *sockaddr, char *envp[], int argc, char *argv[]) = NULL;
 
-	while ((opt = getopt(argc, argv, "inS:e:")) != -1)
+	while ((opt = getopt(argc, argv, "insS:e:")) != -1)
 	{
 		switch (opt)
 		{
@@ -449,6 +452,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'n':
 			sessiontype = CAPSUDO_NONINTERACTIVE;
+			break;
+		case 's':
+			sflag = true;
 			break;
 		case 'S':
 			sockaddr = optarg;
@@ -461,6 +467,17 @@ int main(int argc, char *argv[])
 		default:
 			break;
 		}
+	}
+
+	if (sflag)
+	{
+		sh = getenv("SHELL");
+		if (sh == NULL || !*sh)
+			sh = "sh";
+
+		shargv[0] = sh;
+		argv = shargv;
+		argc = 1;
 	}
 
 	append_default_environment(&envp, &envp_nmemb);
