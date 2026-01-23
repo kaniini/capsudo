@@ -57,7 +57,7 @@ struct capsudo_session {
 [[noreturn]]
 static void usage(void)
 {
-	fprintf(stderr, "usage: capsudod -s socket [-fE] [-o user[:group]] [-m mode] [-e key=value...] [program]\n");
+	fprintf(stderr, "usage: capsudod [-S socket] [-fE] [-o user[:group]] [-m mode] [-e key=value...] [program]\n");
 	exit(EXIT_FAILURE);
 }
 

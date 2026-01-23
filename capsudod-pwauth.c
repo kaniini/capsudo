@@ -38,7 +38,7 @@ static mode_t socket_mode = 0770;
 static void usage(void)
 {
 	fprintf(stderr,
-	        "usage: capsudod-pwauth -s socket [-d capsudod] [-o user[:group]] [-m mode] [-- capsudod-args...]\n");
+	        "usage: capsudod-pwauth -S socket [-d capsudod] [-o user[:group]] [-m mode] [-- capsudod-args...]\n");
 	exit(EXIT_FAILURE);
 }
 
