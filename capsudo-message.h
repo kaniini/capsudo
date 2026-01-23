@@ -20,3 +20,4 @@
 extern bool write_raw_message(int sockfd, struct capsudo_message *msg);
 extern bool write_message(int sockfd, enum capsudo_fieldtype fieldtype, const char *msgbuf);
 extern bool write_u32_message(int sockfd, enum capsudo_fieldtype fieldtype, uint32_t msg);
+extern bool recv_exact(int sockfd, void *buf, size_t len);

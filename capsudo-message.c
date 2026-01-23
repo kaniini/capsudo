@@ -11,6 +11,7 @@
  */
 
 #include <err.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -54,4 +55,30 @@ bool write_u32_message(int sockfd, enum capsudo_fieldtype fieldtype, uint32_t ms
 	memcpy(envmsg->data, &msg, sizeof(uint32_t));
 
 	return write_raw_message(sockfd, envmsg);
+}
+
+bool recv_exact(int fd, void *buf, size_t len)
+{
+	char *p = (char *)buf;
+
+	while (len)
+	{
+		ssize_t n = read(fd, p, len);
+
+		if (n == 0)
+			return false;
+
+		if (n < 0)
+		{
+			if (errno == EINTR)
+				continue;
+
+			return false;
+		}
+
+		p += (size_t)n;
+		len -= (size_t)n;
+	}
+
+	return true;
 }
