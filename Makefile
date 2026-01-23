@@ -1,6 +1,7 @@
 CAPSUDO_DEFAULT_SOCK ?= /run/capsudo/default
 PREFIX ?= /usr/local
 CONFDIR ?= /etc
+MANDIR ?= ${PREFIX}/share/man
 CFLAGS ?= -D_GNU_SOURCE -O2 -Wall -pedantic -std=gnu2x -ggdb3
 PROGS := capsudo capsudod capsudod-pwauth
 
@@ -30,6 +31,7 @@ clean:
 	rm -f ${PROGS} ${CAPSUDO_OBJS} ${CAPSUDOD_OBJS}
 
 INSTALL_OPENRC_FILES ?= false
+INSTALL_MANUAL_PAGES ?= true
 
 install:
 	install -Dm755 capsudo ${DESTDIR}${PREFIX}/bin/capsudo
@@ -40,4 +42,10 @@ install:
 		install -Dm755 dist/openrc/capsudo.initd ${DESTDIR}${CONFDIR}/init.d/capsudo; \
 		install -Dm644 dist/openrc/capsudo.confd ${DESTDIR}${CONFDIR}/conf.d/capsudo; \
 		ln -sf capsudo ${DESTDIR}${CONFDIR}/init.d/capsudo-pwauth; \
+	fi
+
+	if ${INSTALL_MANUAL_PAGES}; then \
+		install -Dm755 man/capsudo.1 ${DESTDIR}${MANDIR}/man1/capsudo.1; \
+		install -Dm755 man/capsudod.8 ${DESTDIR}${MANDIR}/man1/capsudod.8; \
+		install -Dm755 man/capsudod-pwauth.8 ${DESTDIR}${MANDIR}/man1/capsudod-pwauth.8; \
 	fi
