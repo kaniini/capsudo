@@ -1,0 +1,176 @@
+.Dd January 23, 2026
+.Dt CAPSUDOD-PWAUTH 8
+.Os
+.Sh NAME
+.Nm capsudod-pwauth
+.Nd password authentication front-end for capsudod
+.Sh SYNOPSIS
+.Nm
+.Fl S Ar socket
+.Op Fl d Ar capsudod
+.Op Fl o Ar user Ns Op : Ns Ar group
+.Op Fl m Ar mode
+.Op Cm -- Ar capsudod-args ...
+.Sh DESCRIPTION
+.Nm
+is an authentication front-end for
+.Xr capsudod 8
+that performs password verification using the system password database
+(e.g.
+.Pa /etc/shadow ) .
+
+It listens on a UNIX domain socket, authenticates connecting clients,
+and then executes
+.Xr capsudod 8
+with the authenticated client connection passed on file descriptor 0.
+
+In the capsudo architecture, authentication is deliberately separated
+from execution.
+.Nm
+implements one possible authentication mechanism, without embedding
+authentication logic into the execution daemon.
+.Sh DESIGN
+.Nm
+acts as a one-shot gate in front of
+.Xr capsudod 8 :
+.Bl -bullet
+.It
+It consumes only the first protocol message from the client.
+.It
+It performs password verification.
+.It
+It either rejects the connection or execs
+.Xr capsudod 8
+with the already-connected socket.
+.It
+It does not proxy subsequent protocol messages or file descriptors.
+.El
+
+Once authentication succeeds,
+.Nm
+ceases to exist for that connection.
+All further protocol handling occurs directly between the client and
+.Xr capsudod 8 .
+.Sh AUTHENTICATION FLOW
+Authentication uses a reconnect-based protocol.
+.Bl -enum
+.It
+A client connects to
+.Nm .
+.It
+If no secret is provided, the daemon sends
+.Dv CAPSUDO_UNAUTHORIZED
+with an interactive prompt and closes the connection.
+.It
+The client prompts the user and reconnects.
+.It
+The client sends
+.Dv CAPSUDO_SECRET
+as the first protocol message.
+.It
+If the secret is valid,
+.Nm
+forks and execs
+.Xr capsudod 8 ,
+passing the connected socket as file descriptor 0.
+.It
+If the secret is invalid, the daemon sends
+.Dv CAPSUDO_ERROR
+and closes the connection.
+.El
+
+Only one authentication attempt is permitted per connection.
+.Sh PROTOCOL NOTES
+The
+.Dv CAPSUDO_UNAUTHORIZED
+message is used to request user input.
+Its payload is the exact prompt text to be displayed by the client.
+
+After sending
+.Dv CAPSUDO_UNAUTHORIZED ,
+.Nm
+closes the connection.
+This avoids maintaining server-side authentication state and ensures
+that secrets are only accepted as the first message on a fresh
+connection.
+
+The
+.Dv CAPSUDO_ERROR
+message indicates a hard failure.
+After sending it,
+.Nm
+always closes the connection.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl S Ar socket
+Listen on the specified UNIX domain socket path.
+.It Fl d Ar capsudod
+Path to the
+.Xr capsudod 8
+binary to execute after successful authentication.
+If not specified,
+.Nm
+executes
+.Nm capsudod
+found via
+.Ev PATH .
+.It Fl o Ar user Ns Op : Ns Ar group
+Set ownership of the listening socket.
+.It Fl m Ar mode
+Set permissions of the listening socket (octal).
+.It Cm --
+End option processing.
+Remaining arguments are passed verbatim to
+.Xr capsudod 8 .
+.El
+.Sh EXAMPLES
+.Ss Password-gated execution socket
+The following example exposes a password-protected capsudo service
+backed by the default execution policy of
+.Xr capsudod 8 :
+.Bd -literal -offset indent
+# capsudod-pwauth -S /run/capsudo/default -o root:wheel -m 0770 -- capsudod
+.Ed
+
+Clients connecting to
+.Pa /run/capsudo/default
+will be prompted for their password before execution is permitted.
+.Ss Combining authentication with restricted execution
+.Nm
+may also be used in front of a restricted
+.Xr capsudod 8
+instance.
+For example, to require password authentication before allowing
+service management:
+.Bd -literal -offset indent
+# capsudod-pwauth -S /run/capsudo/svc -- capsudod -- /sbin/rc-service --
+.Ed
+
+Authentication is handled by
+.Nm ,
+while command restriction is enforced by
+.Xr capsudod 8 .
+.Sh SECURITY NOTES
+.Bl -bullet
+.It
+.Nm
+must run with sufficient privileges to read
+.Pa /etc/shadow .
+.It
+Only the first protocol message is consumed.
+.It
+No protocol proxying or file descriptor forwarding is performed.
+.It
+All file descriptor passing occurs directly between the client and
+.Xr capsudod 8 .
+.It
+Authentication state is not cached.
+Each authenticated connection is independent.
+.El
+.Sh SEE ALSO
+.Xr capsudo 1 ,
+.Xr capsudod 8 ,
+.Xr shadow 5 ,
+.Xr crypt 3 ,
+.Xr unix 7 ,
+.Xr socket 7

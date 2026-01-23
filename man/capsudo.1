@@ -1,0 +1,168 @@
+.Dd January 23, 2026
+.Dt CAPSUDO 1
+.Os
+.Sh NAME
+.Nm capsudo
+.Nd capability-based privilege delegation client
+.Sh SYNOPSIS
+.Nm
+.Op Fl S Ar socket
+.Op Fl s
+.Op Fl i | Fl n
+.Op Fl e Ar key=value ...
+.Op Ar command
+.Op Ar args ...
+.Sh DESCRIPTION
+.Nm
+is a client for the
+.Xr capsudod 8
+daemon that executes commands with elevated privileges using a
+capability-based protocol rather than traditional setuid semantics.
+
+All privilege transitions occur in the daemon.
+The client itself never gains ambient root privileges.
+Resources such as file descriptors are explicitly passed using UNIX
+domain socket capabilities.
+
+.Sh COMPARISON WITH SUDO AND DOAS
+.Nm
+serves a similar purpose to
+.Xr sudo 8
+and
+.Xr doas 1 ,
+but differs significantly in design and security model.
+
+.Bl -bullet
+.It
+No setuid client:
+Unlike
+.Xr sudo 8
+and many
+.Xr doas 1
+installations, the
+.Nm
+client does not run setuid root.
+All privilege transitions occur in the daemon, which reduces the trusted
+computing base of the client binary.
+.It
+Explicit capability passing:
+Rather than granting broad ambient privileges, resources are conveyed
+explicitly using UNIX domain socket capabilities
+.Pq Xr SCM_RIGHTS 7 .
+This makes privilege transfer explicit, auditable, and composable.
+.It
+Authentication lifetime:
+.Xr sudo 8
+typically caches authentication credentials for a configurable timeout.
+.Xr doas 1
+may also cache authentication depending on configuration.
+In contrast,
+.Nm
+currently performs authentication on a per-connection basis, with no
+credential caching.
+Each authenticated operation requires a fresh connection.
+.It
+Policy and configuration model:
+.Xr sudo 8
+and
+.Xr doas 1
+encode authentication and authorization policy in static configuration
+files
+.Pq Pa sudoers , Pa doas.conf .
+.Nm
+separates execution from authentication and policy.
+Authorization may be implemented by composing wrapper daemons (such as
+.Xr capsudod-pwauth 8 )
+in front of
+.Xr capsudod 8 ,
+allowing policy to be expressed in code or delegated to external systems.
+.It
+Terminal and PTY handling:
+.Xr sudo 8
+and
+.Xr doas 1
+typically allocate and manage a pseudo-terminal on behalf of the user,
+often integrating logging, auditing, or keystroke recording.
+.Nm
+does not inherently require a PTY.
+Terminal handling is driven by client mode
+.Pq Fl i No or Fl n
+and protocol semantics, allowing non-interactive and capability-only
+use cases without terminal mediation.
+.It
+Composability:
+Because
+.Nm
+uses a structured protocol and explicit file descriptor passing,
+it is well suited to integration with service managers, containers,
+and capability-oriented workflows that are difficult to express using
+traditional setuid-based tools.
+.El
+
+.Sh AUTHENTICATION
+When authentication is required, the daemon responds with a
+.Dv CAPSUDO_UNAUTHORIZED
+message whose payload contains an interactive prompt, for example:
+.Bd -literal -offset indent
+[capsudo] user@host's password:
+.Ed
+
+Upon receiving this message, the client prompts the user, reconnects,
+and resends the request with a
+.Dv CAPSUDO_SECRET
+message as the first protocol message.
+
+If authentication fails after a secret has been provided, the daemon
+sends
+.Dv CAPSUDO_ERROR
+and closes the connection.
+
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl S Ar socket
+Connect to the daemon at the specified UNIX domain socket path.
+If not specified, the default socket path is
+.Pa /run/capsudo/default .
+.It Fl s
+Execute the user's shell instead of a specific command.
+This option behaves similarly to
+.Fl s
+in
+.Xr sudo 8
+and
+.Xr doas 1 .
+.It Fl i
+Force interactive mode.
+.It Fl n
+Force non-interactive mode.
+.It Fl e Ar key=value
+Add an environment assignment to the request.
+This option may be specified multiple times.
+.El
+
+.Sh EXIT STATUS
+.Bl -tag -width Ds
+.It 0
+The command completed successfully.
+.It >0
+An error occurred, or the command exited with a non-zero status.
+.El
+
+.Sh SECURITY MODEL
+.Bl -bullet
+.It
+Privileges are granted by possession of explicit capabilities.
+.It
+File descriptors are passed explicitly using
+.Xr SCM_RIGHTS 7 .
+.It
+The client never executes with ambient root privileges.
+.El
+
+.Sh SEE ALSO
+.Xr capsudod 8 ,
+.Xr capsudod-pwauth 8 ,
+.Xr sudo 8 ,
+.Xr doas 1 ,
+.Xr unix 7 ,
+.Xr socket 7

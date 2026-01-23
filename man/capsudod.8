@@ -1,0 +1,217 @@
+.Dd January 23, 2026
+.Dt CAPSUDOD 8
+.Os
+.Sh NAME
+.Nm capsudod
+.Nd capability-based privilege delegation daemon
+.Sh SYNOPSIS
+.Nm
+.Op Fl S Ar socket
+.Op Fl fE
+.Op Fl o Ar user Ns Op : Ns Ar group
+.Op Fl m Ar mode
+.Op Fl e Ar key=value ...
+.Op Ar program
+.Sh DESCRIPTION
+.Nm
+is the privileged daemon that executes commands on behalf of
+.Xr capsudo 1
+clients.
+
+The daemon listens on a UNIX domain socket, receives structured requests
+describing commands, environment variables, and file descriptors, and
+executes the requested program with the appropriate privileges.
+
+In the capsudo architecture, the client is an unprivileged process and
+all privilege-sensitive operations are confined to the daemon.
+
+A discussion of how this design differs from traditional tools such as
+.Xr sudo 8
+and
+.Xr doas 1
+is provided in
+.Xr capsudo 1 .
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl S Ar socket
+Listen on the specified UNIX domain socket path.
+.It Fl f
+Ignore any client-provided arguments.
+.It Fl E
+Ignore any client-provided environment variables.
+.It Fl o Ar user Ns Op : Ns Ar group
+Set ownership of the listening socket.
+This is typically used to restrict which users may connect.
+.It Fl m Ar mode
+Set permissions of the listening socket (octal).
+.It Fl e Ar key=value
+Add an environment assignment for the executed program.
+This option may be specified multiple times.
+.It Ar program
+Program to execute for client requests.
+If not specified, the daemon uses its built-in default behavior.
+.El
+.Sh OPERATION
+When started with
+.Fl S ,
+.Nm
+creates a UNIX domain socket at the specified path and accepts client
+connections.
+
+When started without
+.Fl S ,
+.Nm
+assumes it has been launched by another daemon and serves a single client
+connection on file descriptor 0.
+In this mode,
+.Nm
+does not create or listen on a socket.
+
+This supports inetd-style and wrapper-based deployment, where an
+authentication or policy daemon performs access checks and then execs
+.Nm
+with the already-connected client socket.
+.Sh AUTHENTICATION AND POLICY
+.Nm
+does not perform password authentication or policy evaluation itself.
+
+Authentication and authorization are expected to be handled by an
+external component, such as
+.Xr capsudod-pwauth 8 ,
+or by a site-specific wrapper daemon.
+
+This separation allows authentication, authorization, and execution to
+evolve independently.
+.Sh EXAMPLES
+The examples below illustrate common deployment patterns and how UNIX
+domain sockets can be used to express unbounded, group-bounded, and
+attenuated capabilities.
+.Ss Wide-open execution socket (unbounded authority)
+A common development or single-user setup is a single socket with broad
+access, conventionally located at
+.Pa /run/capsudo/default .
+
+If the socket is world-writable, any local user can request execution.
+This configuration is intentionally unbounded and is useful for
+experimentation, but inappropriate for multi-user systems.
+.Bd -literal -offset indent
+# capsudod -S /run/capsudo/default -o root:root -m 0777
+.Ed
+
+In this model, possession of the socket alone is sufficient to exercise
+the capability.
+.Ss Group-bounded authority
+A safer pattern is to restrict access to a privileged group.
+On Alpine Linux and many other systems, the
+.Cm wheel
+or
+.Cm staff
+group is commonly used for this purpose.
+.Bd -literal -offset indent
+# adduser alice wheel
+# capsudod -S /run/capsudo/default -o root:wheel -m 0770
+.Ed
+
+Only users who are members of the group may connect to the socket.
+The socket itself represents the capability, and filesystem permissions
+control who may exercise it.
+.Ss Service-specific capability
+Capabilities can also be bounded by fixing the command executed by the
+daemon.
+For example, a system administrator may expose a general service
+management capability that permits execution of
+.Xr rc-service 8
+for all services:
+.Bd -literal -offset indent
+# capsudod -S /run/capsudo/svc -o root:staff -m 0770 -- /sbin/rc-service
+.Ed
+
+Members of the
+.Cm staff
+group may now manage system services through this socket.
+.Ss Delegating a narrower capability
+A holder of a broader capability may delegate a strictly narrower one
+to another user.
+
+Suppose a user
+.Cm bob
+is not a member of
+.Cm staff
+but should be permitted to manage only the
+.Cm nginx
+service.
+
+A member of
+.Cm staff
+can derive a narrower capability by invoking
+.Xr capsudod 8
+through
+.Xr capsudo 1
+and fixing the service name as part of the delegated command:
+.Bd -literal -offset indent
+# capsudod -S /run/capsudo/svc-nginx -o root:bob -m 0770 -- \
+    capsudo -S /run/capsudo/svc nginx --
+.Ed
+
+In this example,
+.Pa /run/capsudo/svc-nginx
+is a derived capability that allows only operations on the
+.Cm nginx
+service, even though it was created using a more general authority.
+.Ss Using the delegated capability
+The user
+.Cm bob
+may now manage the
+.Cm nginx
+service via the delegated socket:
+.Bd -literal -offset indent
+$ capsudo -S /run/capsudo/svc-nginx reload
+.Ed
+
+Attempts to manage other services through this socket will fail, because
+the delegated command fixes the service name at delegation time.
+.Ss Properties of capability-based delegation
+These patterns share several important properties:
+.Bl -bullet
+.It
+Authority is represented by possession of a socket.
+.It
+Capabilities can be restricted by filesystem permissions.
+.It
+Capabilities can be attenuated by fixing arguments or commands.
+.It
+Delegated authority can be revoked by removing the socket.
+.El
+.Sh SECURITY NOTES
+.Bl -bullet
+.It
+.Nm
+must run with sufficient privileges to perform requested operations.
+.It
+All privileges granted to the caller are explicit; no ambient authority
+is assumed.
+.It
+File descriptors are received using
+.Xr SCM_RIGHTS 7 .
+If a client passes a descriptor, they are explicitly granting the daemon
+a capability to operate on that object.
+.It
+Access to the listening socket should be restricted using filesystem
+ownership and permissions
+.Pq Fl o , Fl m
+to limit which users may connect.
+.El
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa /run/capsudo/default
+Common default socket path used by
+.Xr capsudo 1 .
+.El
+.Sh SEE ALSO
+.Xr capsudo 1 ,
+.Xr capsudod-pwauth 8 ,
+.Xr sudo 8 ,
+.Xr doas 1 ,
+.Xr unix 7 ,
+.Xr socket 7
+
