@@ -470,10 +470,13 @@ int main(int argc, char *argv[])
 	gid_t gid = -1;
 	mode_t mode = 0770;
 
-	while ((opt = getopt(argc, argv, "s:e:o:m:fE")) != -1)
+	while ((opt = getopt(argc, argv, "s:e:o:m:fEh")) != -1)
 	{
 		switch (opt)
 		{
+		case 'h':
+			usage();
+			break;
 		case 'f':
 			no_client_argv = true;
 			break;
@@ -502,9 +505,7 @@ int main(int argc, char *argv[])
 	}
 
 	if (sockaddr == NULL)
-	{
-		usage();
-	}
+		return child_loop(STDIN_FILENO, envp, argc, argv);
 
 	return daemon_loop(sockaddr, envp, argc, argv, uid, gid, mode);
 }
