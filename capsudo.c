@@ -60,7 +60,7 @@ static enum capsudo_sessiontype determine_session_type(void)
 
 static int usage(void)
 {
-	fprintf(stderr, "usage: capsudo [-S socket] [-i|-n] [-e key=value...] [args]\n");
+	fprintf(stderr, "usage: capsudo [-S socket] [-i|-n] [-s] [-e key=value...] [args]\n");
 	fprintf(stderr, "Default socket path is '%s'.\n", CAPSUDO_DEFAULT_SOCK);
 	return EXIT_FAILURE;
 }
@@ -446,10 +446,13 @@ int main(int argc, char *argv[])
 	char *shargv[2] = { NULL, NULL };
 	int (*loop)(const char *sockaddr, char *envp[], int argc, char *argv[]) = NULL;
 
-	while ((opt = getopt(argc, argv, "insS:e:")) != -1)
+	while ((opt = getopt(argc, argv, "hinsS:e:")) != -1)
 	{
 		switch (opt)
 		{
+		case 'h':
+			return usage();
+			break;
 		case 'i':
 			sessiontype = CAPSUDO_INTERACTIVE;
 			break;
