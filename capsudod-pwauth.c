@@ -243,9 +243,9 @@ int main(int argc, char **argv)
 {
 	int opt;
 
-	while ((opt = getopt(argc, argv, "s:d:o:m:")) != -1) {
+	while ((opt = getopt(argc, argv, "S:d:o:m:")) != -1) {
 		switch (opt) {
-		case 's':
+		case 'S':
 			listen_sock = optarg;
 			break;
 		case 'd':

@@ -335,7 +335,7 @@ int main(int argc, char *argv[])
 	gid_t gid = -1;
 	mode_t mode = 0770;
 
-	while ((opt = getopt(argc, argv, "s:e:o:m:fEh")) != -1)
+	while ((opt = getopt(argc, argv, "S:e:o:m:fEh")) != -1)
 	{
 		switch (opt)
 		{
@@ -348,7 +348,7 @@ int main(int argc, char *argv[])
 		case 'E':
 			no_client_env = true;
 			break;
-		case 's':
+		case 'S':
 			sockaddr = optarg;
 			break;
 		case 'e':

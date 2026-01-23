@@ -1,3 +1,4 @@
+CAPSUDO_DEFAULT_SOCK ?= /run/capsudo/default
 PREFIX ?= /usr/local
 CFLAGS ?= -D_GNU_SOURCE -O2 -Wall -pedantic -std=gnu2x -ggdb3
 PROGS := capsudo capsudod capsudod-pwauth
@@ -10,6 +11,8 @@ CAPSUDOD_OBJS := ${CAPSUDOD_SRCS:.c=.o}
 
 CAPSUDOD_PWAUTH_SRCS := capsudod-pwauth.c capsudo-message.c capsudo-ownerspec.c
 CAPSUDOD_PWAUTH_OBJS := ${CAPSUDOD_PWAUTH_SRCS:.c=.o}
+
+CPPFLAGS += '-DCAPSUDO_DEFAULT_SOCK="${CAPSUDO_DEFAULT_SOCK}"'
 
 all: ${PROGS}
 
