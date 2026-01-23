@@ -486,6 +486,7 @@ int main(int argc, char *argv[])
 		shargv[0] = sh;
 		argv = shargv;
 		argc = 1;
+		optind = 0;
 	}
 
 	append_default_environment(&envp, &envp_nmemb);
