@@ -248,8 +248,11 @@ static enum capsudo_sessionresult handle_incoming_message(int sockfd, char **err
 		}
 
 		case CAPSUDO_ERROR:
+		{
+			restore_tty();
 			fprintf(stderr, "capsudo: error: %s\n", msg->data);
 			break;
+		}
 
 		default:
 			fprintf(stderr, "capsudo: ignoring unexpected message %d, length %zu\n", msg->fieldtype, msg->length);
