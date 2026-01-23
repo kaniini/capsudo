@@ -243,8 +243,10 @@ int main(int argc, char **argv)
 {
 	int opt;
 
-	while ((opt = getopt(argc, argv, "S:d:o:m:")) != -1) {
-		switch (opt) {
+	while ((opt = getopt(argc, argv, "S:d:o:m:")) != -1)
+	{
+		switch (opt)
+		{
 		case 'S':
 			listen_sock = optarg;
 			break;
@@ -271,7 +273,8 @@ int main(int argc, char **argv)
 	char **capsudod_argv = &argv[optind];
 	int capsudod_argc = argc - optind;
 
-	if (capsudod_argc > 0 && strcmp(capsudod_argv[0], "--") == 0) {
+	if (capsudod_argc > 0 && strcmp(capsudod_argv[0], "--") == 0)
+	{
 		capsudod_argv++;
 		capsudod_argc--;
 	}
