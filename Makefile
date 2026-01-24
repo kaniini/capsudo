@@ -47,6 +47,6 @@ install:
 
 	if ${INSTALL_MANUAL_PAGES}; then \
 		install -Dm755 man/capsudo.1 ${DESTDIR}${MANDIR}/man1/capsudo.1; \
-		install -Dm755 man/capsudod.8 ${DESTDIR}${MANDIR}/man1/capsudod.8; \
-		install -Dm755 man/capsudod-pwauth.8 ${DESTDIR}${MANDIR}/man1/capsudod-pwauth.8; \
+		install -Dm755 man/capsudod.8 ${DESTDIR}${MANDIR}/man8/capsudod.8; \
+		install -Dm755 man/capsudod-pwauth.8 ${DESTDIR}${MANDIR}/man8/capsudod-pwauth.8; \
 	fi
