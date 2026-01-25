@@ -43,6 +43,7 @@ install:
 		install -Dm755 dist/openrc/capsudo.initd ${DESTDIR}${CONFDIR}/init.d/capsudo; \
 		install -Dm644 dist/openrc/capsudo.confd ${DESTDIR}${CONFDIR}/conf.d/capsudo; \
 		ln -sf capsudo ${DESTDIR}${CONFDIR}/init.d/capsudo-pwauth; \
+		ln -sf capsudo ${DESTDIR}${CONFDIR}/conf.d/capsudo-pwauth; \
 	fi
 
 	if ${INSTALL_MANUAL_PAGES}; then \
