@@ -24,8 +24,8 @@ SOCKET_MODE="0770"
 # DAEMON="capsudod"
 
 # Paths (adjust if installed elsewhere)
-CAPSUDOD_PATH="/usr/sbin/capsudod"
-PWAUTH_PATH="/usr/sbin/capsudod-pwauth"
+CAPSUDOD_PATH="/usr/bin/capsudod"
+PWAUTH_PATH="/usr/bin/capsudod-pwauth"
 
 # Attenuation: the program (and args) executed by the final capsudod.
 # Appended after "--".
