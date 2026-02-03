@@ -49,7 +49,7 @@ Consult the [capsudod manual page] for more examples.
 
    [capsudod manual page]: man/capsudod.8
 
-My blog [rethinking sudo with object capabilities] also has some good examples of
-capability delegation.
+My blog [rethinking sudo with object capabilities][rethink-sudo] also has some
+good examples of capability delegation.
 
    [rethink-sudo]: https://ariadne.space/2025/12/12/rethinking-sudo-with-object-capabilities.html
