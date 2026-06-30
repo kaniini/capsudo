@@ -22,6 +22,7 @@ enum capsudo_fieldtype {
 	CAPSUDO_ERROR = 6,
 	CAPSUDO_SECRET = 7,
 	CAPSUDO_UNAUTHORIZED = 8,
+	CAPSUDO_WINSIZE = 9,
 	CAPSUDO_END = 255,
 };
 

@@ -31,6 +31,7 @@
 #include <grp.h>
 #include <pwd.h>
 #include <limits.h>
+#include <pty.h>
 
 #include "capsudo-common.h"
 #include "capsudo-message.h"
@@ -53,6 +54,8 @@ struct capsudo_session {
 	size_t envp_nmemb;
 
 	char *secontext;
+
+	struct winsize winsize;
 };
 
 [[noreturn]]
@@ -160,6 +163,10 @@ static bool receive_configuration(struct capsudo_session *session)
 		case CAPSUDO_SESSION_TYPE:
 			session->sessiontype = *(int *) msg->data;
 			break;
+		case CAPSUDO_WINSIZE:
+			if (msg->length == sizeof(struct winsize))
+				memcpy(&session->winsize, msg->data, sizeof(struct winsize));
+			break;
 		case CAPSUDO_END:
 			return true;
 		default:
@@ -187,12 +194,157 @@ static void fatality(int clientfd, int errorcode, char *errfmt, ...)
 	_exit(errorcode);
 }
 
+/* Apply the client's SELinux context to the about-to-exec child, if any. */
+static void apply_secontext(struct capsudo_session *session)
+{
+	if (session->secontext == NULL)
+		return;
+
+	size_t selen = strlen(session->secontext);
+	int attrfd = open("/proc/self/attr/exec", O_WRONLY);
+	if (attrfd < 0 || write(attrfd, session->secontext, selen) != (ssize_t) selen)
+		fatality(session->clientfd, 127, "unable to set selinux context: %s", strerror(errno));
+	close(attrfd);
+}
+
+/*
+ * Interactive session: the daemon allocates the pty so the child gets a real
+ * controlling terminal (with working job control) in this process's context.
+ * The pty master is bridged to the descriptors the client delegated — its real
+ * terminal — and window-size updates arrive as control messages.
+ */
+static int run_pty_session(struct capsudo_session *session)
+{
+	int master, slave;
+
+	if (openpty(&master, &slave, NULL, NULL, &session->winsize) < 0)
+		fatality(session->clientfd, 127, "unable to allocate pty: %s", strerror(errno));
+
+	pid_t childpid = fork();
+	if (childpid < 0)
+		fatality(session->clientfd, 127, "unable to fork: %s", strerror(errno));
+
+	if (childpid == 0)
+	{
+		close(master);
+
+		if (setsid() < 0)
+			fatality(session->clientfd, 127, "unable to setsid: %s", strerror(errno));
+
+		if (dup2(slave, STDIN_FILENO) < 0 ||
+		    dup2(slave, STDOUT_FILENO) < 0 ||
+		    dup2(slave, STDERR_FILENO) < 0)
+			fatality(session->clientfd, 127, "unable to dup pty slave: %s", strerror(errno));
+
+		if (slave > STDERR_FILENO)
+			close(slave);
+
+		if (ioctl(STDIN_FILENO, TIOCSCTTY, 0) < 0)
+			fatality(session->clientfd, 127, "unable to set controlling terminal: %s", strerror(errno));
+
+		apply_secontext(session);
+
+		execvpe(session->argv[0], session->argv, session->envp);
+		fatality(session->clientfd, 127, "unable to execvpe: %s", strerror(errno));
+	}
+
+	close(slave);
+
+	if (session->secontext != NULL)
+		free(session->secontext);
+
+	int cin = session->client_stdin;
+	int cout = session->client_stdout;
+
+	for (;;)
+	{
+		struct pollfd pfd[3] = {
+			{ .fd = session->clientfd, .events = POLLIN },
+			{ .fd = cin,               .events = POLLIN },
+			{ .fd = master,            .events = POLLIN },
+		};
+
+		if (poll(pfd, 3, -1) < 0)
+		{
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+
+		/* Control channel: window-size updates, or the client hanging up. */
+		if (pfd[0].revents & (POLLIN | POLLHUP))
+		{
+			struct capsudo_message hdr;
+			char payload[256];
+
+			if (read(session->clientfd, &hdr, sizeof hdr) != (ssize_t) sizeof hdr)
+				break;
+
+			if (hdr.length > sizeof payload)
+				break;
+
+			if (hdr.length > 0 &&
+			    read(session->clientfd, payload, hdr.length) != (ssize_t) hdr.length)
+				break;
+
+			if (hdr.fieldtype == CAPSUDO_WINSIZE && hdr.length == sizeof(struct winsize))
+				ioctl(master, TIOCSWINSZ, payload);
+		}
+
+		/* Client terminal input -> pty master. */
+		if (cin >= 0 && (pfd[1].revents & POLLIN))
+		{
+			char buf[8192];
+			ssize_t n = read(cin, buf, sizeof buf);
+			if (n > 0)
+				(void) write(master, buf, (size_t) n);
+			else
+				cin = -1; /* input closed; stop polling it */
+		}
+
+		/* pty master -> client terminal output. */
+		if (pfd[2].revents & (POLLIN | POLLHUP))
+		{
+			char buf[8192];
+			ssize_t n = read(master, buf, sizeof buf);
+			if (n > 0)
+				(void) write(cout, buf, (size_t) n);
+			else
+				break; /* child closed the pty: it has exited */
+		}
+	}
+
+	close(master);
+
+	int status;
+	int exitcode = EXIT_FAILURE;
+	if (waitpid(childpid, &status, 0) >= 0)
+	{
+		if (WIFEXITED(status))
+			exitcode = WEXITSTATUS(status);
+		else if (WIFSIGNALED(status))
+			exitcode = 128 + WTERMSIG(status);
+	}
+
+	if (!write_u32_message(session->clientfd, CAPSUDO_EXIT, (uint32_t) exitcode))
+		return EXIT_FAILURE;
+
+	return EXIT_SUCCESS;
+}
+
 static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 {
 	int argi, envi;
 	struct capsudo_session session = {
 		.clientfd = clientfd,
+		.winsize = { .ws_row = 24, .ws_col = 80 },
 	};
+
+	/*
+	 * The listener ignores SIGCHLD so it never accumulates zombies, but this
+	 * per-connection process must reap its own child to report the exit code.
+	 */
+	signal(SIGCHLD, SIG_DFL);
 
 	for (argi = optind; argi < argc; argi++)
 	{
@@ -224,6 +376,9 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 	if (!get_client_secontext(&session))
 		return EXIT_FAILURE;
 
+	if (session.sessiontype == CAPSUDO_INTERACTIVE)
+		return run_pty_session(&session);
+
 	pid_t childpid = fork();
 	if (childpid < 0)
 		err(EXIT_FAILURE, "forking child process");
@@ -242,32 +397,7 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 		if (dup2(session.client_stderr, STDERR_FILENO) < 0)
 			fatality(session.clientfd, 127, "unable to dup stderr: %s", strerror(errno));
 
-		if (session.sessiontype == CAPSUDO_INTERACTIVE)
-		{
-			if (ioctl(STDIN_FILENO, TIOCSCTTY, 0) < 0)
-				fatality(session.clientfd, 127, "unable to set controlling terminal: %s", strerror(errno));
-
-			struct sigaction old, ignore = {
-				.sa_handler = SIG_IGN,
-			};
-
-			sigaction(SIGTTOU, &ignore, &old);
-			tcsetpgrp(STDIN_FILENO, getpgrp());
-			sigaction(SIGTTOU, &old, NULL);
-		}
-
-		if (session.secontext != NULL)
-		{
-			size_t selen = strlen(session.secontext);
-			int attrfd;
-
-			attrfd = open("/proc/self/attr/exec", O_WRONLY);
-			if (attrfd < 0 || write(attrfd, session.secontext, selen) != selen)
-				fatality(session.clientfd, 127, "unable to set selinux context: %s", strerror(errno));
-			close(attrfd);
-
-			free(session.secontext);
-		}
+		apply_secontext(&session);
 
 		execvpe(session.argv[0], session.argv, session.envp);
 		fatality(session.clientfd, 127, "unable to execvpe: %s", strerror(errno));
@@ -286,7 +416,7 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 	else if (WIFSIGNALED(status))
 		exitcode = 128 + WTERMSIG(status);
 
-	if (!write_u32_message(session.clientfd, CAPSUDO_EXIT, (uint32_t) WEXITSTATUS(exitcode)))
+	if (!write_u32_message(session.clientfd, CAPSUDO_EXIT, (uint32_t) exitcode))
 		return EXIT_FAILURE;
 
 	return EXIT_SUCCESS;

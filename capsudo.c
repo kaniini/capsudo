@@ -29,11 +29,12 @@
 #include "capsudo-message.h"
 #include "capsudo-common.h"
 
-static int pty_ourside = -1;
-static int pty_theirside = -1;
 static struct termios saved_tio;
 static bool have_saved_tio = false;
 static enum capsudo_sessiontype sessiontype = CAPSUDO_AUTO;
+
+/* Set by the SIGWINCH handler; the client loop forwards the new size. */
+static volatile sig_atomic_t winch_pending = 0;
 
 enum capsudo_sessionresult {
 	CAPSUDO_SESSION_OK,
@@ -74,29 +75,38 @@ static void restore_tty(void)
 static void handle_sigwinch(int sig)
 {
 	(void) sig;
-
-	if (pty_ourside < 0)
-		return;
-
-	struct winsize wsz;
-	if (!ioctl(STDIN_FILENO, TIOCGWINSZ, &wsz))
-		ioctl(pty_ourside, TIOCSWINSZ, &wsz);
+	winch_pending = 1;
 }
 
-static bool setup_pty(void)
+/* Put our terminal into raw mode, saving the prior settings for restore. */
+static bool setup_raw_terminal(void)
+{
+	if (tcgetattr(STDIN_FILENO, &saved_tio) < 0)
+		return false;
+
+	have_saved_tio = true;
+
+	struct termios raw = saved_tio;
+	cfmakeraw(&raw);
+	tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+
+	return true;
+}
+
+/* Send the current terminal dimensions to the daemon. */
+static bool write_winsize(int sockfd)
 {
 	struct winsize wsz;
 
-	if (!tcgetattr(STDIN_FILENO, &saved_tio))
-		have_saved_tio = true;
-
 	if (ioctl(STDIN_FILENO, TIOCGWINSZ, &wsz) < 0)
-		return false;
+		return true;
 
-	if (openpty(&pty_ourside, &pty_theirside, NULL, &saved_tio, &wsz) < 0)
-		return false;
+	struct capsudo_message *msg = alloca(sizeof(*msg) + sizeof(wsz));
+	msg->fieldtype = CAPSUDO_WINSIZE;
+	msg->length = sizeof(wsz);
+	memcpy(msg->data, &wsz, sizeof(wsz));
 
-	return true;
+	return write_raw_message(sockfd, msg);
 }
 
 static int connect_to_daemon(const char *sockaddr)
@@ -151,10 +161,15 @@ static bool send_file_descriptors(int sockfd)
 		.cmsg_len = CMSG_LEN(sizeof(int) * 3),
 	};
 
+	/*
+	 * The daemon allocates the pty now, so we always delegate our real
+	 * standard streams; for an interactive session these are our terminal,
+	 * which the daemon bridges to the pty it creates on its side.
+	 */
 	int fdtable[3] = {
-		sessiontype == CAPSUDO_INTERACTIVE ? pty_theirside : STDIN_FILENO,
-		sessiontype == CAPSUDO_INTERACTIVE ? pty_theirside : STDOUT_FILENO,
-		sessiontype == CAPSUDO_INTERACTIVE ? pty_theirside : STDERR_FILENO,
+		STDIN_FILENO,
+		STDOUT_FILENO,
+		STDERR_FILENO,
 	};
 
 	memcpy(CMSG_DATA(cmsg), &fdtable, sizeof(fdtable));
@@ -200,6 +215,12 @@ static int setup_connection(const char *sockaddr, char *envp[], int argc, char *
 
 	if (!write_u32_message(sockfd, CAPSUDO_SESSION_TYPE, (uint32_t) sessiontype))
 		return -1;
+
+	if (sessiontype == CAPSUDO_INTERACTIVE)
+	{
+		if (!write_winsize(sockfd))
+			return -1;
+	}
 
 	if (!send_file_descriptors(sockfd))
 		return -1;
@@ -263,67 +284,55 @@ static enum capsudo_sessionresult handle_incoming_message(int sockfd, char **err
 	return CAPSUDO_SESSION_OK;
 }
 
-static void relay_buffer(int fromfd, int tofd)
-{
-	char buf[8192];
-
-	ssize_t n = read(fromfd, buf, sizeof buf);
-	if (n > 0)
-		write(tofd, buf, (size_t) n);
-}
-
 static int client_loop_interactive(const char *sockaddr, char *envp[], int argc, char *argv[])
 {
 	int sockfd;
 	char *secret = NULL;
 
-	if (!setup_pty())
-		err(EXIT_FAILURE, "failed to allocate pty");
-
-	if (have_saved_tio)
-	{
-		struct termios raw = saved_tio;
-
-		cfmakeraw(&raw);
-		tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+	/*
+	 * The pty lives on the daemon now: it reads and writes our real terminal
+	 * directly (via the descriptors we pass).  We only put the terminal into
+	 * raw mode and forward resize events; there is no local data relay.
+	 */
+	if (setup_raw_terminal())
 		atexit(restore_tty);
-	}
 
 	struct sigaction sa = {
 		.sa_handler = handle_sigwinch,
 	};
 
 	sigemptyset(&sa.sa_mask);
-	sa.sa_flags = SA_RESTART;
+	/* No SA_RESTART: a resize interrupts poll() so we can forward it. */
+	sa.sa_flags = 0;
 	sigaction(SIGWINCH, &sa, NULL);
-	handle_sigwinch(SIGWINCH);
 
 	sockfd = setup_connection(sockaddr, envp, argc, argv, secret);
 
 	for (;;)
 	{
-		struct pollfd pfd[3] = {
-			{ .fd = STDIN_FILENO,	.events = POLLIN },
-			{ .fd = pty_ourside,	.events = POLLIN },
+		struct pollfd pfd[1] = {
 			{ .fd = sockfd,		.events = POLLIN },
 		};
 
-		if (poll(pfd, 3, -1) < 0)
+		if (poll(pfd, 1, -1) < 0)
 		{
-			if (secret != NULL)
-				free(secret);
+			if (errno != EINTR)
+			{
+				if (secret != NULL)
+					free(secret);
 
-			close(sockfd);
-			return EXIT_FAILURE;
+				close(sockfd);
+				return EXIT_FAILURE;
+			}
+		}
+
+		if (winch_pending)
+		{
+			winch_pending = 0;
+			write_winsize(sockfd);
 		}
 
 		if (pfd[0].revents & POLLIN)
-			relay_buffer(STDIN_FILENO, pty_ourside);
-
-		if (pfd[1].revents & POLLIN)
-			relay_buffer(pty_ourside, STDOUT_FILENO);
-
-		if (pfd[2].revents & POLLIN)
 		{
 			char *prompt = NULL;
 			enum capsudo_sessionresult ret = handle_incoming_message(sockfd, &prompt);
