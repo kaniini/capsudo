@@ -15,11 +15,11 @@ By default it will install to `/usr`.
 
 ## Using it from the command-line
 
-Run `capsudod -s socket-path-here` to create a socket and listen on it.
+Run `capsudod -S socket-path-here` to create a socket and listen on it.
 This socket acts as an *object capability*: anyone who can access the socket
 can make use of it.
 
-Run `capsudo -s socket-path-here [arguments]` to *invoke* the object capability you created.
+Run `capsudo -S socket-path-here [arguments]` to *invoke* the object capability you created.
 The capsudo daemon will accept a connection, stitch everything together and run the program
 bound to the object capability.
 
@@ -29,18 +29,18 @@ Allowing anyone in `%wheel` to run any program you want (classical sudo/doas set
 
 ```
 # mkdir -p /run/cap
-# capsudod -s /run/cap/sudo-capability &
+# capsudod -S /run/cap/sudo-capability &
 # chgrp wheel /run/cap/sudo-capability
 # chmod 770 /run/cap/sudo-capability
-$ capsudo -s /run/cap/sudo-capability
+$ capsudo -S /run/cap/sudo-capability
 ```
 
 Allowing someone to reboot the machine:
 
 ```
-# capsudod -s /home/user/reboot-capability reboot &
+# capsudod -S /home/user/reboot-capability reboot &
 # chown user:user /home/user/reboot-capability && chmod 700 /home/user/reboot-capability
-$ capsudo -s /home/user/reboot-capability
+$ capsudo -S /home/user/reboot-capability
 ```
 
 ## Other examples
