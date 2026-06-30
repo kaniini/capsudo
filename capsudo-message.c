@@ -24,40 +24,115 @@
 #include "capsudo-common.h"
 #include "capsudo-message.h"
 
-bool write_raw_message(int sockfd, struct capsudo_message *msg)
-{
-	size_t nwritten, xwritten;
+/*
+ * The wire format is host-stable: a fixed 8-byte header (u32le field type +
+ * u32le length) followed by the payload, with all integers little-endian and no
+ * native struct/padding dependence. It is byte-compatible with the Rust
+ * implementation (capsudo-rs). The in-memory `struct capsudo_message` is never
+ * read or written raw; it is only a convenience container.
+ */
 
-	xwritten = sizeof(struct capsudo_message) + msg->length;
-	if ((nwritten = write(sockfd, msg, xwritten)) != xwritten)
+void capsudo_put_u16le(uint8_t *p, uint16_t v)
+{
+	p[0] = (uint8_t) v;
+	p[1] = (uint8_t) (v >> 8);
+}
+
+uint16_t capsudo_get_u16le(const uint8_t *p)
+{
+	return (uint16_t) (p[0] | ((uint16_t) p[1] << 8));
+}
+
+void capsudo_put_u32le(uint8_t *p, uint32_t v)
+{
+	p[0] = (uint8_t) v;
+	p[1] = (uint8_t) (v >> 8);
+	p[2] = (uint8_t) (v >> 16);
+	p[3] = (uint8_t) (v >> 24);
+}
+
+uint32_t capsudo_get_u32le(const uint8_t *p)
+{
+	return (uint32_t) p[0] | ((uint32_t) p[1] << 8) |
+	       ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 24);
+}
+
+void capsudo_encode_header(uint8_t buf[CAPSUDO_HEADER_SIZE], uint32_t type, uint32_t len)
+{
+	capsudo_put_u32le(buf, type);
+	capsudo_put_u32le(buf + 4, len);
+}
+
+void capsudo_decode_header(const uint8_t buf[CAPSUDO_HEADER_SIZE], uint32_t *type, uint32_t *len)
+{
+	*type = capsudo_get_u32le(buf);
+	*len = capsudo_get_u32le(buf + 4);
+}
+
+static bool write_all(int sockfd, const void *buf, size_t len)
+{
+	const char *p = buf;
+
+	while (len)
 	{
-		close(sockfd);
-		err(EXIT_FAILURE, "failed to write %zu bytes to capsudo daemon, wrote %zu instead", xwritten, nwritten);
+		ssize_t n = write(sockfd, p, len);
+
+		if (n < 0)
+		{
+			if (errno == EINTR)
+				continue;
+
+			return false;
+		}
+
+		if (n == 0)
+			return false;
+
+		p += (size_t) n;
+		len -= (size_t) n;
 	}
+
+	return true;
+}
+
+bool write_message_bytes(int sockfd, enum capsudo_fieldtype fieldtype, const void *buf, size_t len)
+{
+	uint8_t hdr[CAPSUDO_HEADER_SIZE];
+
+	capsudo_encode_header(hdr, (uint32_t) fieldtype, (uint32_t) len);
+
+	if (!write_all(sockfd, hdr, sizeof hdr))
+		return false;
+
+	if (len && !write_all(sockfd, buf, len))
+		return false;
 
 	return true;
 }
 
 bool write_message(int sockfd, enum capsudo_fieldtype fieldtype, const char *msgbuf)
 {
-	struct capsudo_message *envmsg = alloca(sizeof(struct capsudo_message) + strlen(msgbuf) + 1);
-
-	envmsg->fieldtype = fieldtype;
-	envmsg->length = strlen(msgbuf) + 1;
-	strlcpy(envmsg->data, msgbuf, envmsg->length);
-
-	return write_raw_message(sockfd, envmsg);
+	/* Strings travel without a trailing NUL; the receiver re-terminates. */
+	return write_message_bytes(sockfd, fieldtype, msgbuf, strlen(msgbuf));
 }
 
 bool write_u32_message(int sockfd, enum capsudo_fieldtype fieldtype, uint32_t msg)
 {
-	struct capsudo_message *envmsg = alloca(sizeof(struct capsudo_message) + sizeof(uint32_t));
+	uint8_t buf[4];
 
-	envmsg->fieldtype = fieldtype;
-	envmsg->length = sizeof(uint32_t);
-	memcpy(envmsg->data, &msg, sizeof(uint32_t));
+	capsudo_put_u32le(buf, msg);
+	return write_message_bytes(sockfd, fieldtype, buf, sizeof buf);
+}
 
-	return write_raw_message(sockfd, envmsg);
+bool read_message_header(int sockfd, uint32_t *out_type, uint32_t *out_len)
+{
+	uint8_t hdr[CAPSUDO_HEADER_SIZE];
+
+	if (!recv_exact(sockfd, hdr, sizeof hdr))
+		return false;
+
+	capsudo_decode_header(hdr, out_type, out_len);
+	return true;
 }
 
 bool recv_exact(int fd, void *buf, size_t len)

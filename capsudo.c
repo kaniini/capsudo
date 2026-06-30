@@ -101,12 +101,14 @@ static bool write_winsize(int sockfd)
 	if (ioctl(STDIN_FILENO, TIOCGWINSZ, &wsz) < 0)
 		return true;
 
-	struct capsudo_message *msg = alloca(sizeof(*msg) + sizeof(wsz));
-	msg->fieldtype = CAPSUDO_WINSIZE;
-	msg->length = sizeof(wsz);
-	memcpy(msg->data, &wsz, sizeof(wsz));
+	/* Serialize as four u16le fields rather than memcpy'ing the struct. */
+	uint8_t buf[8];
+	capsudo_put_u16le(buf, wsz.ws_row);
+	capsudo_put_u16le(buf + 2, wsz.ws_col);
+	capsudo_put_u16le(buf + 4, wsz.ws_xpixel);
+	capsudo_put_u16le(buf + 6, wsz.ws_ypixel);
 
-	return write_raw_message(sockfd, msg);
+	return write_message_bytes(sockfd, CAPSUDO_WINSIZE, buf, sizeof buf);
 }
 
 static int connect_to_daemon(const char *sockaddr)
@@ -132,14 +134,14 @@ static int connect_to_daemon(const char *sockaddr)
 
 static bool send_file_descriptors(int sockfd)
 {
-	struct capsudo_message fdmsg = {
-		.fieldtype = CAPSUDO_FD,
-		.length = 0,
-	};
+	/* Host-stable FD frame: 8-byte header + u32le descriptor count (3). */
+	uint8_t fdbuf[CAPSUDO_HEADER_SIZE + 4];
+	capsudo_encode_header(fdbuf, (uint32_t) CAPSUDO_FD, 4);
+	capsudo_put_u32le(fdbuf + CAPSUDO_HEADER_SIZE, 3);
 
 	struct iovec fdmsg_iov = {
-		.iov_base = &fdmsg,
-		.iov_len = sizeof(fdmsg),
+		.iov_base = fdbuf,
+		.iov_len = sizeof(fdbuf),
 	};
 
 	union {
@@ -233,24 +235,27 @@ static int setup_connection(const char *sockaddr, char *envp[], int argc, char *
 
 static enum capsudo_sessionresult handle_incoming_message(int sockfd, char **errmsg)
 {
-	struct capsudo_message msghdr;
+	uint32_t type, len;
 
-	if (read(sockfd, &msghdr, sizeof msghdr) != sizeof(msghdr))
+	if (!read_message_header(sockfd, &type, &len))
 	{
 		close(sockfd);
 		exit(EXIT_FAILURE);
 	}
 
-	struct capsudo_message *msg = alloca(sizeof(msghdr) + msghdr.length);
-	memcpy(msg, &msghdr, sizeof(msghdr));
+	struct capsudo_message *msg = alloca(sizeof(*msg) + len + 1);
+	msg->fieldtype = type;
+	msg->length = len;
 
-	ssize_t n = read(sockfd, msg->data, msg->length);
-	if (n != msg->length)
+	if (len && !recv_exact(sockfd, msg->data, len))
 	{
 		restore_tty();
 		close(sockfd);
-		err(EXIT_FAILURE, "failed to read %zu bytes from the daemon, got %zu", msg->length, n);
+		err(EXIT_FAILURE, "failed to read %u bytes from the daemon", len);
 	}
+
+	/* Re-terminate so payloads that are strings are safe to use as such. */
+	msg->data[len] = '\0';
 
 	switch (msg->fieldtype)
 	{
@@ -263,7 +268,7 @@ static enum capsudo_sessionresult handle_incoming_message(int sockfd, char **err
 
 		case CAPSUDO_EXIT:
 		{
-			int exitcode = *(int *) msg->data;
+			int exitcode = (int) capsudo_get_u32le((const uint8_t *) msg->data);
 
 			close(sockfd);
 			exit(exitcode);

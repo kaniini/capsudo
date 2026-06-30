@@ -116,9 +116,11 @@ static bool recv_header_no_rights(int fd, struct capsudo_message *hdr)
 		struct cmsghdr align;
 	} cmsgbuf;
 
+	uint8_t hdrbuf[CAPSUDO_HEADER_SIZE];
+
 	struct iovec iov = {
-		.iov_base = hdr,
-		.iov_len  = sizeof *hdr,
+		.iov_base = hdrbuf,
+		.iov_len  = sizeof hdrbuf,
 	};
 
 	struct msghdr mh = {
@@ -129,7 +131,7 @@ static bool recv_header_no_rights(int fd, struct capsudo_message *hdr)
 	};
 
 	ssize_t n = recvmsg(fd, &mh, 0);
-	if (n != (ssize_t)sizeof *hdr)
+	if (n != (ssize_t)sizeof hdrbuf)
 		return false;
 
 	for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&mh);
@@ -140,6 +142,11 @@ static bool recv_header_no_rights(int fd, struct capsudo_message *hdr)
 			return false;
 		}
 	}
+
+	uint32_t type, len;
+	capsudo_decode_header(hdrbuf, &type, &len);
+	hdr->fieldtype = type;
+	hdr->length = len;
 
 	return true;
 }
@@ -179,7 +186,7 @@ static void handle_client(int sockfd, int clientfd, const char *user, char **cap
 		return;
 	}
 
-	char *secret = calloc(1, hdr.length);
+	char *secret = calloc(1, hdr.length + 1);
 	if (secret == NULL)
 	{
 		send_error_and_close(clientfd, CAPSUDO_ERROR, "out of memory");
@@ -193,7 +200,8 @@ static void handle_client(int sockfd, int clientfd, const char *user, char **cap
 		return;
 	}
 
-	secret[hdr.length - 1] = '\0';
+	/* Secrets travel without a trailing NUL; terminate after the bytes read. */
+	secret[hdr.length] = '\0';
 	if (secret[0] == '\0')
 	{
 		wipe_free(secret);

@@ -103,7 +103,7 @@ static bool receive_configuration(struct capsudo_session *session)
 {
 	while (true)
 	{
-		struct capsudo_message capsudo_msghdr = {};
+		uint8_t hdrbuf[CAPSUDO_HEADER_SIZE];
 
 		union {
 			char buf[CMSG_SPACE(sizeof(int) * 3)];
@@ -111,8 +111,8 @@ static bool receive_configuration(struct capsudo_session *session)
 		} cmsgbuf;
 
 		struct iovec iov = {
-			.iov_base = &capsudo_msghdr,
-			.iov_len = sizeof(capsudo_msghdr),
+			.iov_base = hdrbuf,
+			.iov_len = sizeof(hdrbuf),
 		};
 
 		struct msghdr msgh = {
@@ -124,14 +124,21 @@ static bool receive_configuration(struct capsudo_session *session)
 			.msg_controllen = sizeof(cmsgbuf.buf),
 		};
 
-		if (recvmsg(session->clientfd, &msgh, 0) != sizeof(capsudo_msghdr))
+		/* Read the fixed wire header (capturing any SCM_RIGHTS that ride it). */
+		if (recvmsg(session->clientfd, &msgh, 0) != (ssize_t) sizeof(hdrbuf))
 			return false;
 
-		struct capsudo_message *msg = alloca(sizeof(struct capsudo_message) + capsudo_msghdr.length);
-		memcpy(msg, &capsudo_msghdr, sizeof(struct capsudo_message));
+		uint32_t type, len;
+		capsudo_decode_header(hdrbuf, &type, &len);
 
-		if (read(session->clientfd, msg->data, msg->length) != msg->length)
+		struct capsudo_message *msg = alloca(sizeof(struct capsudo_message) + len + 1);
+		msg->fieldtype = type;
+		msg->length = len;
+
+		if (len && !recv_exact(session->clientfd, msg->data, len))
 			return false;
+
+		msg->data[len] = '\0';
 
 		int fdtable[3];
 		switch (msg->fieldtype)
@@ -161,11 +168,16 @@ static bool receive_configuration(struct capsudo_session *session)
 			session->client_stderr = fdtable[2];
 			break;
 		case CAPSUDO_SESSION_TYPE:
-			session->sessiontype = *(int *) msg->data;
+			session->sessiontype = (enum capsudo_sessiontype) capsudo_get_u32le((const uint8_t *) msg->data);
 			break;
 		case CAPSUDO_WINSIZE:
-			if (msg->length == sizeof(struct winsize))
-				memcpy(&session->winsize, msg->data, sizeof(struct winsize));
+			if (msg->length == 8)
+			{
+				session->winsize.ws_row = capsudo_get_u16le((const uint8_t *) msg->data);
+				session->winsize.ws_col = capsudo_get_u16le((const uint8_t *) msg->data + 2);
+				session->winsize.ws_xpixel = capsudo_get_u16le((const uint8_t *) msg->data + 4);
+				session->winsize.ws_ypixel = capsudo_get_u16le((const uint8_t *) msg->data + 6);
+			}
 			break;
 		case CAPSUDO_END:
 			return true;
@@ -274,21 +286,28 @@ static int run_pty_session(struct capsudo_session *session)
 		/* Control channel: window-size updates, or the client hanging up. */
 		if (pfd[0].revents & (POLLIN | POLLHUP))
 		{
-			struct capsudo_message hdr;
-			char payload[256];
+			uint32_t type, len;
+			uint8_t payload[256];
 
-			if (read(session->clientfd, &hdr, sizeof hdr) != (ssize_t) sizeof hdr)
+			if (!read_message_header(session->clientfd, &type, &len))
 				break;
 
-			if (hdr.length > sizeof payload)
+			if (len > sizeof payload)
 				break;
 
-			if (hdr.length > 0 &&
-			    read(session->clientfd, payload, hdr.length) != (ssize_t) hdr.length)
+			if (len && !recv_exact(session->clientfd, payload, len))
 				break;
 
-			if (hdr.fieldtype == CAPSUDO_WINSIZE && hdr.length == sizeof(struct winsize))
-				ioctl(master, TIOCSWINSZ, payload);
+			if (type == CAPSUDO_WINSIZE && len == 8)
+			{
+				struct winsize ws = {
+					.ws_row = capsudo_get_u16le(payload),
+					.ws_col = capsudo_get_u16le(payload + 2),
+					.ws_xpixel = capsudo_get_u16le(payload + 4),
+					.ws_ypixel = capsudo_get_u16le(payload + 6),
+				};
+				ioctl(master, TIOCSWINSZ, &ws);
+			}
 		}
 
 		/* Client terminal input -> pty master. */
