@@ -132,7 +132,7 @@ bool read_message_header(int sockfd, uint32_t *out_type, uint32_t *out_len)
 		return false;
 
 	capsudo_decode_header(hdr, out_type, out_len);
-	return true;
+	return *out_len <= CAPSUDO_MAX_PAYLOAD;
 }
 
 bool recv_exact(int fd, void *buf, size_t len)

@@ -21,6 +21,12 @@
 /* Fixed, host-stable wire header: u32le field type + u32le payload length. */
 #define CAPSUDO_HEADER_SIZE 8
 
+/*
+ * The largest payload a peer may declare. The length field is the peer's to choose, so anything larger is refused before it sizes
+ * an allocation.
+ */
+#define CAPSUDO_MAX_PAYLOAD (16 * 1024 * 1024)
+
 extern void capsudo_put_u16le(uint8_t *p, uint16_t v);
 extern uint16_t capsudo_get_u16le(const uint8_t *p);
 extern void capsudo_put_u32le(uint8_t *p, uint32_t v);

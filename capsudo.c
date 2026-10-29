@@ -17,7 +17,6 @@
 #include <errno.h>
 #include <string.h>
 #include <stdbool.h>
-#include <alloca.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/ioctl.h>
@@ -243,7 +242,14 @@ static enum capsudo_sessionresult handle_incoming_message(int sockfd, char **err
 		exit(EXIT_FAILURE);
 	}
 
-	struct capsudo_message *msg = alloca(sizeof(*msg) + len + 1);
+	struct capsudo_message *msg = malloc(sizeof(*msg) + len + 1);
+	if (msg == NULL)
+	{
+		restore_tty();
+		close(sockfd);
+		errx(EXIT_FAILURE, "unable to allocate %u bytes for a message from the daemon", len);
+	}
+
 	msg->fieldtype = type;
 	msg->length = len;
 
@@ -262,6 +268,7 @@ static enum capsudo_sessionresult handle_incoming_message(int sockfd, char **err
 		case CAPSUDO_UNAUTHORIZED:
 		{
 			*errmsg = strdup(msg->data);
+			free(msg);
 			close(sockfd);
 			return CAPSUDO_SESSION_SECRET_REQUIRED;
 		}
@@ -286,6 +293,7 @@ static enum capsudo_sessionresult handle_incoming_message(int sockfd, char **err
 			fprintf(stderr, "capsudo: ignoring unexpected message %d, length %zu\n", msg->fieldtype, msg->length);
 	}
 
+	free(msg);
 	return CAPSUDO_SESSION_OK;
 }
 

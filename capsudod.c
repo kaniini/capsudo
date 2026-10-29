@@ -17,7 +17,6 @@
 #include <err.h>
 #include <string.h>
 #include <stdbool.h>
-#include <alloca.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -99,6 +98,17 @@ static bool get_client_secontext(struct capsudo_session *session)
 	return true;
 }
 
+static void close_fds(const int *fds, size_t nfds)
+{
+	for (size_t i = 0; i < nfds; i++)
+		close(fds[i]);
+}
+
+/*
+ * Reads the handshake, which ends with CAPSUDO_END. It takes exactly three
+ * descriptors with CAPSUDO_FD, closes any that arrive with another message, and
+ * refuses a session that delegated no stdio.
+ */
 static bool receive_configuration(struct capsudo_session *session)
 {
 	while (true)
@@ -124,28 +134,61 @@ static bool receive_configuration(struct capsudo_session *session)
 			.msg_controllen = sizeof(cmsgbuf.buf),
 		};
 
-		/* Read the fixed wire header (capturing any SCM_RIGHTS that ride it). */
-		if (recvmsg(session->clientfd, &msgh, 0) != (ssize_t) sizeof(hdrbuf))
+		/*
+		 * Read the fixed wire header (capturing any SCM_RIGHTS that ride it).
+		 * Close-on-exec keeps a descriptor the program is not given out of it;
+		 * dup2() clears the flag on the stdio it is given.
+		 */
+		if (recvmsg(session->clientfd, &msgh, MSG_CMSG_CLOEXEC) != (ssize_t) sizeof(hdrbuf))
 			return false;
+
+		/* The kernel closes descriptors that did not fit, and says so. */
+		int fds[3];
+		size_t nfds = 0;
+		for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msgh); cmsg != NULL; cmsg = CMSG_NXTHDR(&msgh, cmsg))
+		{
+			if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS)
+				continue;
+
+			size_t count = (cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+			for (size_t i = 0; i < count && nfds < 3; i++)
+				memcpy(&fds[nfds++], CMSG_DATA(cmsg) + i * sizeof(int), sizeof(int));
+		}
 
 		uint32_t type, len;
 		capsudo_decode_header(hdrbuf, &type, &len);
 
-		struct capsudo_message *msg = alloca(sizeof(struct capsudo_message) + len + 1);
+		if ((msgh.msg_flags & MSG_CTRUNC) || len > CAPSUDO_MAX_PAYLOAD)
+		{
+			close_fds(fds, nfds);
+			return false;
+		}
+
+		struct capsudo_message *msg = malloc(sizeof(struct capsudo_message) + len + 1);
+		if (msg == NULL)
+		{
+			close_fds(fds, nfds);
+			return false;
+		}
+
 		msg->fieldtype = type;
 		msg->length = len;
 
 		if (len && !recv_exact(session->clientfd, msg->data, len))
+		{
+			close_fds(fds, nfds);
+			free(msg);
 			return false;
+		}
 
 		msg->data[len] = '\0';
 
-		int fdtable[3];
+		bool ok = true, done = false;
 		switch (msg->fieldtype)
 		{
 		case CAPSUDO_ARG:
 			if (no_client_argv)
-				continue;
+				break;
 
 			session->argv = reallocarray(session->argv, ++session->argv_nmemb + 1, sizeof(char *));
 			session->argv[session->argv_nmemb - 1] = strdup(msg->data);
@@ -153,22 +196,34 @@ static bool receive_configuration(struct capsudo_session *session)
 			break;
 		case CAPSUDO_ENV:
 			if (no_client_env)
-				continue;
+				break;
 
 			session->envp = reallocarray(session->envp, ++session->envp_nmemb + 1, sizeof(char *));
 			session->envp[session->envp_nmemb - 1] = strdup(msg->data);
 			session->envp[session->envp_nmemb] = NULL;
 			break;
 		case CAPSUDO_FD:
-			struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msgh);
-			memcpy(fdtable, CMSG_DATA(cmsg), sizeof(fdtable));
+			if (nfds != 3)
+			{
+				ok = false;
+				break;
+			}
 
-			session->client_stdin = fdtable[0];
-			session->client_stdout = fdtable[1];
-			session->client_stderr = fdtable[2];
+			if (session->client_stdin >= 0)
+			{
+				close(session->client_stdin);
+				close(session->client_stdout);
+				close(session->client_stderr);
+			}
+
+			session->client_stdin = fds[0];
+			session->client_stdout = fds[1];
+			session->client_stderr = fds[2];
+			nfds = 0;
 			break;
 		case CAPSUDO_SESSION_TYPE:
-			session->sessiontype = (enum capsudo_sessiontype) capsudo_get_u32le((const uint8_t *) msg->data);
+			if (msg->length == 4)
+				session->sessiontype = (enum capsudo_sessiontype) capsudo_get_u32le((const uint8_t *) msg->data);
 			break;
 		case CAPSUDO_WINSIZE:
 			if (msg->length == 8)
@@ -180,13 +235,21 @@ static bool receive_configuration(struct capsudo_session *session)
 			}
 			break;
 		case CAPSUDO_END:
-			return true;
+			done = true;
+			break;
 		default:
 			break;
 		}
-	}
 
-	return false;
+		close_fds(fds, nfds);
+		free(msg);
+
+		if (!ok)
+			return false;
+
+		if (done)
+			return session->client_stdin >= 0;
+	}
 }
 
 [[noreturn]]
@@ -356,6 +419,9 @@ static int child_loop(int clientfd, char *envp[], int argc, char *argv[])
 	int argi, envi;
 	struct capsudo_session session = {
 		.clientfd = clientfd,
+		.client_stdin = -1,
+		.client_stdout = -1,
+		.client_stderr = -1,
 		.winsize = { .ws_row = 24, .ws_col = 80 },
 	};
 
@@ -451,7 +517,12 @@ static int daemon_loop(const char *sockaddr, char *envp[], int argc, char *argv[
 
 	while (true)
 	{
-		int clientfd = accept(sockfd, NULL, NULL);
+		/*
+		 * Close-on-exec keeps the control socket out of the program, which
+		 * could otherwise send the client its own CAPSUDO_EXIT or CAPSUDO_ERROR.
+		 * Messages sent before exec still reach the client.
+		 */
+		int clientfd = accept4(sockfd, NULL, NULL, SOCK_CLOEXEC);
 		if (clientfd < 0)
 			err(EXIT_FAILURE, "accepting client at %s", sockaddr);
 
